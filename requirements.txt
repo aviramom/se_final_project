@@ -1,0 +1,21 @@
+# ── UI ────────────────────────────────────────────────────────────────────────
+streamlit>=1.35.0
+plotly>=5.22.0          # charts on the dashboard page
+
+# ── Data / storage ────────────────────────────────────────────────────────────
+numpy>=1.26.0
+pandas>=2.2.0           # CSV export, DataFrame manipulation
+
+# ── ML / model inference ──────────────────────────────────────────────────────
+torch>=2.2.0
+transformers>=4.41.0    # HuggingFace model wrappers
+datasets>=2.19.0        # HuggingFace benchmark datasets (SQuAD, etc.)
+accelerate>=0.30.0      # multi-device inference helpers
+
+# ── Metrics ───────────────────────────────────────────────────────────────────
+scikit-learn>=1.4.0     # F1 score; MSE/MAE also available as fallback
+
+# ── Dev / quality ─────────────────────────────────────────────────────────────
+pytest>=8.2.0
+ruff>=0.4.0
+mypy>=1.10.0

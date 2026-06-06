@@ -14,47 +14,94 @@ It is a university **Software Engineering final project**. The graded deliverabl
 
 ---
 
-## 2. The two abstractions everything depends on
+## 2. Architecture
 
-These are the heart of the architecture. Get the interfaces right before generating lots of code around them.
-
-- **Uniform Dataset class** — wraps a benchmark *in its original file format* and exposes one standardized interface (e.g. `get_inputs()`, `get_targets()`, `modality`). It must NOT require the raw benchmark files to be manually altered or pre-processed (see Data Immutability constraint). Adding a new benchmark = writing one subclass, no changes elsewhere.
-- **Model wrapper** — wraps a foundation model and handles modality-specific input formatting (prompt construction for text, windowing/formatting for time-series). Adding a new model = writing one wrapper, no changes elsewhere.
-
-If a change to either of these forces edits in the UI, execution, or scoring layers, the abstraction is leaking — flag it rather than papering over it.
-
----
-
-## 3. Architecture (layers, decoupled)
+Strict layered design (lightweight ports-and-adapters). Five layers; dependencies point **inward** toward the domain. The two core abstractions sit at the center and depend on nothing. Each layer knows only the layer directly below it — this is what makes the whole pipeline testable without a live cluster.
 
 ```
-UI (Streamlit/Gradio)
-   → Config registry (which models/benchmarks exist, their params)
-      → Uniform Dataset classes  +  Model wrappers   (standardization)
-         → Execution manager (generate sbatch script → submit → track status)
-            → Compute cluster (Slurm)  /  Mock runner (POC)
-               → Result parser → Metric calculator
-                  → Results store (SQLite)
-                     → Dashboard (charts, tables) + CSV export
+┌─────────────────────────────────────────────────────┐
+│  Layer 1 · Presentation       Streamlit / Gradio    │
+│           ConfigPage  ·  DashboardPage               │
+├─────────────────────────────────────────────────────┤
+│  Layer 2 · Orchestration      EvaluationService     │
+├─────────────────────────────────────────────────────┤
+│  Layer 3 · Domain             Dataset (ABC)         │
+│                               ModelWrapper (ABC)    │
+│                               Metric (ABC)          │
+│                               Sample (dataclass)    │
+├─────────────────────────────────────────────────────┤
+│  Layer 4 · Execution          ScriptGenerator       │
+│                               Runner (ABC)          │
+│                               ResultParser          │
+│                               EvaluationJob         │
+├─────────────────────────────────────────────────────┤
+│  Layer 5 · Data & Config      ResultsRepository     │
+│                               ModelRegistry         │
+│                               BenchmarkRegistry     │
+└─────────────────────────────────────────────────────┘
 ```
 
-Each layer talks to the next through a narrow interface. The UI must never reach into a dataset's raw format; the metric calculator must never know which model produced the predictions.
+### Layer 1 — Presentation
 
-### Suggested layout (adjust as it grows)
+Two pages, both in Streamlit/Gradio. `ConfigPage` populates dropdowns from the registries, collects evaluation parameters, and on "Run" calls one method on `EvaluationService`. `DashboardPage` shows job statuses, renders comparison charts/tables, and triggers CSV export.
+
+Hard rule: no business logic in the UI. It never reads a raw benchmark file or computes a metric — it only calls `EvaluationService` and renders the result.
+
+### Layer 2 — Orchestration
+
+`EvaluationService` is the single class the UI talks to. It owns the workflow and does none of the actual work. Public surface: `list_models()`, `list_benchmarks()` (delegates to registries), `run_evaluation(config) -> job_id`, `poll_jobs()`, `get_dashboard_data()`, `export_csv()`. Everything below is invoked by the service; nothing below ever calls back up.
+
+### Layer 3 — Domain (core abstractions)
+
+These three ABCs and one dataclass are the heart of the system. Get their interfaces right before generating code around them. A change here that forces edits in any other layer means the abstraction is leaking — flag it rather than papering over it.
+
+`Dataset` (ABC) wraps a benchmark in its **original file format** and exposes a `modality` property plus an iterator yielding `Sample` objects (input + target). Adding a benchmark = one new subclass, zero changes elsewhere. The Data Immutability constraint lives here — standardization happens in code, never by editing raw files.
+
+`ModelWrapper` (ABC) declares `supported_modalities`, `format_input(sample)` (model-specific prompting/windowing), and a `predict(...)` entry point. `predict` is the code that runs on the cluster; in mock mode the same code runs locally.
+
+`Metric` (ABC) exposes `applicable_modalities` and `compute(predictions, targets)`. Concrete subclasses: MSE and MAE (time-series), ExactMatch and F1 (text).
+
+`Sample` (dataclass) is the standardized unit flowing between `Dataset` and `ModelWrapper`.
+
+**Modality as the matching key.** A `Dataset` declares its modality; that single tag determines which `ModelWrapper`s are compatible (validated before a run starts) and which `Metric`s apply. No `if benchmark == X` branching anywhere — modality drives the routing.
+
+### Layer 4 — Execution
+
+`ScriptGenerator` builds the `sbatch` script (env vars, paths, run command). `Runner` (ABC) provides `submit(job) -> handle` and `get_status(handle)` — the most important POC seam. Three implementations: `SlurmRunner` (shells out to `sbatch`/`squeue`), `MockRunner` (runs a truncated dummy eval locally), `PrecomputedRunner` (returns a handle pointing at a canned log). Swap the runner; nothing else changes. `ResultParser` reads raw output logs into predictions + targets ready for a `Metric`. `JobStatus` (enum): `queued / running / completed / failed`. `EvaluationJob` (dataclass) carries job state across the async boundary.
+
+### Layer 5 — Data & Configuration
+
+`ResultsRepository` is a thin SQLite wrapper storing `EvaluationResult` records (model name, benchmark name, modality, metrics dict, timestamp, execution time). `ModelRegistry` and `BenchmarkRegistry` are loaded at startup and answer two questions: "what's available?" for the UI, and "give me object X" for the service.
+
+### Key interactions
+
+**Run flow (write path).** `ConfigPage → EvaluationService.run_evaluation(config)`. The service resolves names through the registries into a `Dataset` and a `ModelWrapper`, checks `model.supports(dataset.modality)`, asks `ScriptGenerator` for a script, hands it to the configured `Runner`, persists an `EvaluationJob` as `queued`, and returns immediately — the UI never blocks. Later, `poll_jobs()` asks the `Runner` for status; on completion it calls `ResultParser` → selects the right `Metric` by modality → `compute` → `ResultsRepository.save`.
+
+**Dashboard (read path).** `DashboardPage → get_dashboard_data() → ResultsRepository.query → charts`. The read and write paths are fully independent, which is what satisfies the "configuration phase vs. asynchronous results-viewing phase" requirement.
+
+### Suggested layout
+
 ```
 fmeval/
-  app/            # Streamlit/Gradio UI: config page + dashboard page
+  __init__.py     # package root
+  app/            # Streamlit/Gradio UI: ConfigPage + DashboardPage
   core/
-    datasets/     # uniform dataset base class + concrete benchmark subclasses
-    models/       # model wrapper base class + concrete wrappers
-    metrics/      # MSE/MAE (time-series), exact-match/F1 (text)
-  execution/      # sbatch script generation, submission, status tracking, MOCK runner
-  storage/        # SQLite schema + persistence helpers
-  config/         # registries of available models & benchmarks
+    datasets/     # Dataset ABC + concrete benchmark subclasses
+    models/       # ModelWrapper ABC + concrete wrappers
+    metrics/      # Metric ABC + MSE, MAE, ExactMatch, F1
+  execution/      # ScriptGenerator, Runner ABC, SlurmRunner, MockRunner,
+                  # PrecomputedRunner, ResultParser, EvaluationJob, JobStatus
+  storage/        # ResultsRepository (SQLite), EvaluationResult
+  config/         # ModelRegistry, BenchmarkRegistry
+  services/
+    __init__.py
+    types.py              # EvaluationConfig, DashboardData (stubs)
+    evaluation_service.py # EvaluationService (stubs)
 data/
-  dummy/          # tiny datasets for local/dummy runs
+  dummy/          # tiny datasets for local / dummy runs
   precomputed/    # canned cluster output logs for the offline demo
 tests/
+models/           # model wrappers (active development area)
 ARD_Project.pdf   # ground-truth requirements — consult when unsure
 CLAUDE.md
 ```

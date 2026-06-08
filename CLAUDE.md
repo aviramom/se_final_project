@@ -55,15 +55,17 @@ Hard rule: no business logic in the UI. It never reads a raw benchmark file or c
 
 These three ABCs and one dataclass are the heart of the system. Get their interfaces right before generating code around them. A change here that forces edits in any other layer means the abstraction is leaking — flag it rather than papering over it.
 
-`Dataset` (ABC) wraps a benchmark in its **original file format** and exposes a `modality` property plus an iterator yielding `Sample` objects (input + target). Adding a benchmark = one new subclass, zero changes elsewhere. The Data Immutability constraint lives here — standardization happens in code, never by editing raw files.
+`Dataset` (ABC) wraps a benchmark in its **original file format** and exposes a `modality` property plus an iterator yielding `Sample` objects. Adding a benchmark = one new subclass, zero changes elsewhere. The Data Immutability constraint lives here — standardization happens in code, never by editing raw files. All current benchmarks subclass `MultimodalDataset` which fixes `modality="multimodal"` and enforces placeholder validation.
 
-`ModelWrapper` (ABC) declares `supported_modalities`, `format_input(sample)` (model-specific prompting/windowing), and a `predict(...)` entry point. `predict` is the code that runs on the cluster; in mock mode the same code runs locally.
+`Sample` (dataclass) — **implemented** — the standardized unit between `Dataset` and `ModelWrapper`: `input_text` (NL prompt with `<TS_N>` placeholders), `input_ts` (list of raw numpy arrays), `output` (ground-truth text string), `metadata` (dict).
 
-`Metric` (ABC) exposes `applicable_modalities` and `compute(predictions, targets)`. Concrete subclasses: MSE and MAE (time-series), ExactMatch and F1 (text).
+`SampleFormatter` (in `core/datasets/formatters.py`) — **implemented** — converts between the canonical **separate** form (placeholders + raw arrays) that all datasets emit, and the **combined** form (TS serialized inline in text) that LLMs consume. `ModelWrapper` declares `input_mode` and calls the formatter in `format_input`.
 
-`Sample` (dataclass) is the standardized unit flowing between `Dataset` and `ModelWrapper`.
+`ModelWrapper` (ABC) declares `supported_modalities`, `input_mode` (`"combined"` or `"separate"`), `format_input(sample)`, and `predict(...) -> list[str]`. All models output text. `predict` is the code that runs on the cluster; in mock mode the same code runs locally.
 
-**Modality as the matching key.** A `Dataset` declares its modality; that single tag determines which `ModelWrapper`s are compatible (validated before a run starts) and which `Metric`s apply. No `if benchmark == X` branching anywhere — modality drives the routing.
+`Metric` (ABC) — **implemented** — exposes `applicable_modalities` and `compute(predictions, targets) -> dict[str, float]`. `MCQMetrics` is the concrete implementation: returns accuracy, balanced\_accuracy, F1, precision, recall (macro + weighted), n\_unparseable, and per-class breakdowns in a single call.
+
+**Modality as the matching key.** A `Dataset` declares its modality (`"multimodal"` for all current datasets); that single tag determines which `ModelWrapper`s are compatible and which `Metric`s apply. No `if benchmark == X` branching anywhere — modality drives the routing.
 
 ### Layer 4 — Execution
 
@@ -86,22 +88,49 @@ fmeval/
   __init__.py     # package root
   app/            # Streamlit/Gradio UI: ConfigPage + DashboardPage
   core/
-    datasets/     # Dataset ABC + concrete benchmark subclasses
-    models/       # ModelWrapper ABC + concrete wrappers
-    metrics/      # Metric ABC + MSE, MAE, ExactMatch, F1
+    sample.py              # ✅ Sample dataclass (input_text, input_ts, output)
+    datasets/
+      base.py              # ✅ Dataset ABC
+      base_multimodal.py   # ✅ MultimodalDataset (modality fixed, validation)
+      formatters.py        # ✅ SampleFormatter (combined ↔ separate)
+      template.py          # ✅ JSONLMultimodalDataset (copy-paste template)
+      <benchmark>.py       # one file per concrete benchmark
+    models/
+      base.py              # ✅ ModelWrapper ABC
+      mock_model.py        # ✅ MockModel (fixed-answer baseline)
+      __init__.py          # ✅
+    metrics/
+      base.py              # ✅ Metric ABC
+      mcq_metrics.py       # ✅ MCQMetrics + extract_letter()
+      __init__.py          # ✅
+  evaluation/              # ✅ Local synchronous evaluation pipeline
+    pipeline.py            # ✅ LocalEvaluationPipeline
+    result.py              # ✅ RunResult, SamplePrediction
+    __init__.py            # ✅
   execution/      # ScriptGenerator, Runner ABC, SlurmRunner, MockRunner,
                   # PrecomputedRunner, ResultParser, EvaluationJob, JobStatus
   storage/        # ResultsRepository (SQLite), EvaluationResult
   config/         # ModelRegistry, BenchmarkRegistry
   services/
     __init__.py
-    types.py              # EvaluationConfig, DashboardData (stubs)
-    evaluation_service.py # EvaluationService (stubs)
+    types.py              # ✅ EvaluationConfig, DashboardData
+    evaluation_service.py # EvaluationService (stub)
 data/
-  dummy/          # tiny datasets for local / dummy runs
+  dummy/          # tiny JSONL datasets for local / dummy runs
   precomputed/    # canned cluster output logs for the offline demo
+notebooks/
+  tsexam1_demo.ipynb       # ✅ Executed demo: sample inspection + evaluation walkthrough
+  build_notebook.py        # script that regenerates the notebook
 tests/
-models/           # model wrappers (active development area)
+  core/
+    test_sample.py         # ✅
+    test_formatters.py     # ✅
+    test_jsonl_dataset.py  # ✅
+    test_tsexam1.py        # ✅
+    test_mcq_metrics.py    # ✅
+    test_mock_model.py     # ✅
+  evaluation/
+    test_pipeline.py       # ✅ LocalEvaluationPipeline + RunResult (30 tests)
 ARD_Project.pdf   # ground-truth requirements — consult when unsure
 CLAUDE.md
 ```
@@ -115,13 +144,13 @@ CLAUDE.md
 - **Compute:** real execution targets a **Slurm**-managed GPU cluster via generated `sbatch` scripts.
 - **Storage:** local DB / structured files — **SQLite** is the natural fit for the POC.
 - **Async by nature:** evaluations are NOT real-time. Jobs go into a queue; the UI must clearly separate the *configuration* phase from the *results-viewing* phase. The app must stay responsive (screen transitions / standard queries < 2s) while jobs run.
-- **Metrics:** time-series → MSE, MAE. Text → exact-match, F1.
+- **Metrics:** multimodal MCQ tasks → `MCQMetrics` (accuracy, balanced\_accuracy, F1, precision, recall — all macro + weighted + per-class).
 - **Stored per run:** model name, benchmark name, timestamp, execution time, computed metrics.
 
 ### POC / demo constraint (important)
 Real runs can take hours and depend on cluster availability, so the system **must support an offline/simulated mode**: either a drastically reduced "dummy" dataset run locally, OR parsing pre-computed logs to visualize instantly. Build the execution layer behind an interface with a **MockRunner** and a **SlurmRunner**, switchable by config, so the demo never depends on a live queue.
 
-The first thing to build is the **vertical slice** from the ARD's POC plan: one dropdown model + one time-series benchmark → "Run" generates a script → mock/dummy execution → parse → compute MSE → show in a table/chart.
+The first thing to build is the **vertical slice** from the ARD's POC plan: one dropdown model + one multimodal benchmark → "Run" generates a script → mock/dummy execution → parse → compute ExactMatch / F1 → show in a table/chart.
 
 ---
 
@@ -140,12 +169,12 @@ The first thing to build is the **vertical slice** from the ARD's POC plan: one 
 > Fill these in as the project takes shape; keep them accurate so Claude can verify its own work.
 
 ```bash
-# environment (suggest uv or venv + pip)
+# environment: .venv at repo root (Python 3.14)
 # install:        pip install -r requirements.txt
 # run the app:    streamlit run fmeval/app/main.py
-# run tests:      pytest
-# lint/format:    ruff check . && ruff format .
-# type check:     mypy fmeval
+# run tests:      .venv/bin/pytest
+# lint/format:    .venv/bin/ruff check . && .venv/bin/ruff format .
+# type check:     .venv/bin/mypy fmeval
 ```
 
 ---
@@ -154,8 +183,8 @@ The first thing to build is the **vertical slice** from the ARD's POC plan: one 
 
 - Unit-test the abstractions hardest: a new dataset subclass and a new model wrapper should be testable in isolation with no cluster.
 - Test metric calculators against known inputs/expected outputs.
-- Test the parser against the pre-computed logs in `data/precomputed/`.
-- The MockRunner makes the whole pipeline end-to-end testable without Slurm — there should be a test that runs config → mock execution → parse → metric → store.
+- The `LocalEvaluationPipeline` + `MockModel` already provide full end-to-end tests in `tests/evaluation/test_pipeline.py` — keep these passing when adding new models or metrics.
+- When the Slurm execution layer is added, add tests that run config → mock execution → parse → metric → store using `MockRunner`.
 
 ---
 

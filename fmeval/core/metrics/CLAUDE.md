@@ -4,6 +4,9 @@
 Each subclass is selected at runtime by modality — there is no hard-coded mapping
 between a benchmark name and a metric.
 
+**Status: implemented.** `base.py` and `mcq_metrics.py` are written and tested
+(`tests/core/test_mcq_metrics.py`).
+
 ---
 
 ## Files
@@ -11,11 +14,9 @@ between a benchmark name and a metric.
 ```
 metrics/
   CLAUDE.md
-  base.py          ← Metric ABC
-  mse.py           ← MSE  (time-series)
-  mae.py           ← MAE  (time-series)
-  exact_match.py   ← ExactMatch (text)
-  f1.py            ← F1   (text)
+  __init__.py       ← exports: Metric, MCQMetrics, extract_letter
+  base.py           ← ✅ Metric ABC
+  mcq_metrics.py    ← ✅ MCQMetrics (all MCQ evaluation metrics) + extract_letter()
 ```
 
 ---
@@ -23,36 +24,42 @@ metrics/
 ## Metric ABC (`base.py`)
 
 ```python
-from abc import ABC, abstractmethod
-from typing import Any, Literal
-
 class Metric(ABC):
-    """
-    Computes a scalar score from predictions and targets.
-    Must not know which model produced the predictions or which benchmark
-    supplied the targets.
-    """
+    @property
+    @abstractmethod
+    def name(self) -> str: ...
 
     @property
     @abstractmethod
-    def name(self) -> str:
-        """Short identifier stored in EvaluationResult, e.g. 'mse'."""
-        ...
-
-    @property
-    @abstractmethod
-    def applicable_modalities(self) -> list[Literal["text", "time_series"]]: ...
+    def applicable_modalities(self) -> list[Literal["text", "time_series", "multimodal"]]: ...
 
     @abstractmethod
-    def compute(self, predictions: Any, targets: Any) -> float:
-        """
-        predictions and targets arrive pre-parsed by ResultParser.
-        Text:        list[str], list[str]
-        Time-series: np.ndarray [batch, horizon], np.ndarray [batch, horizon]
-        Returns a single float score.
-        """
+    def compute(self, predictions: list[str], targets: list[str]) -> dict[str, float]:
+        """Returns a flat dict of metric_name → score (not a single float).
+        A single subclass can report multiple related scores in one pass."""
         ...
 ```
+
+---
+
+## MCQMetrics (`mcq_metrics.py`) — **implemented**
+
+Handles all multiple-choice question evaluation. One call to `compute()` returns:
+
+| Key | Description |
+|---|---|
+| `accuracy` | fraction of correctly predicted letters |
+| `balanced_accuracy` | average per-class recall (handles class imbalance) |
+| `f1_macro` / `f1_weighted` | unweighted / support-weighted mean F1 |
+| `precision_macro` / `precision_weighted` | mean precision |
+| `recall_macro` / `recall_weighted` | mean recall |
+| `n_samples` | total predictions |
+| `n_unparseable` | predictions where no A–D letter was extracted |
+| `f1_A`, `precision_A`, `recall_A`, `support_A` … | per-class breakdown for each letter present in targets |
+
+**`extract_letter(text: str) -> str | None`** — utility exported from this module.
+Tries `([A-D])\)` first, then `\b([A-D])\b` as fallback. Returns `None` if no
+letter is found.
 
 ---
 
@@ -62,10 +69,11 @@ Each metric file must:
 
 1. Subclass `Metric`.
 2. Implement `name`, `applicable_modalities`, and `compute`.
-3. Keep `compute` stateless — it receives everything it needs as arguments.
+3. Keep `compute` stateless — receives everything as arguments; returns `dict[str, float]`.
 
-`EvaluationService` selects metrics by filtering on `applicable_modalities ==
-dataset.modality`. No metric should know the name of the model or benchmark.
+`EvaluationService` selects metrics by filtering on
+`applicable_modalities ⊇ {dataset.modality}`. No metric should know the name of
+the model or benchmark.
 
 ---
 
@@ -73,5 +81,6 @@ dataset.modality`. No metric should know the name of the model or benchmark.
 
 | Modality      | Metrics applied          |
 |---------------|--------------------------|
-| `time_series` | MSE, MAE                 |
-| `text`        | ExactMatch, F1           |
+| `multimodal`  | MCQMetrics               |
+| `text`        | MCQMetrics               |
+| `time_series` | *(reserved — not current focus)* |

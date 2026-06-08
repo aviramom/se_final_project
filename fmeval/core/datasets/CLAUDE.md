@@ -4,6 +4,9 @@
 uniform interface. Adding a new benchmark means adding one subclass here — nothing else
 in the system changes.
 
+**Status: implemented.** `base.py`, `base_multimodal.py`, `formatters.py`, and
+`template.py` are all written and tested (`tests/core/`).
+
 ---
 
 ## Files
@@ -11,10 +14,13 @@ in the system changes.
 ```
 datasets/
   CLAUDE.md
-  base.py          ← Dataset ABC
-  squad.py         ← SQuAD (text QA benchmark)
-  etth1.py         ← ETTh1 (time-series benchmark)
-  ...              ← one file per benchmark
+  __init__.py          ← public re-exports
+  base.py              ← Dataset ABC
+  base_multimodal.py   ← MultimodalDataset helper base (fixes modality, adds validation)
+  formatters.py        ← SampleFormatter: canonical ↔ combined conversion
+  template.py          ← JSONLMultimodalDataset — copy-paste template for new benchmarks
+  tsexam1.py           ← ✅ AutonLab/TimeSeriesExam1 (HuggingFace, 746 MCQ questions)
+  <benchmark>.py       ← one file per concrete benchmark
 ```
 
 ---
@@ -22,51 +28,96 @@ datasets/
 ## Dataset ABC (`base.py`)
 
 ```python
-from abc import ABC, abstractmethod
-from typing import Iterator, Literal
-from fmeval.core.sample import Sample
-
 class Dataset(ABC):
-    """
-    Wraps a benchmark in its original format and yields standardized Samples.
-    Never alters the raw benchmark files — standardization happens in code here.
-    """
+    @property
+    @abstractmethod
+    def modality(self) -> Literal["text", "time_series", "multimodal"]: ...
 
     @property
     @abstractmethod
-    def modality(self) -> Literal["text", "time_series"]: ...
+    def name(self) -> str: ...         # registry key + stored in results
 
+    @abstractmethod
+    def __iter__(self) -> Iterator[Sample]: ...   # lazy preferred
+
+    @abstractmethod
+    def __len__(self) -> int: ...
+```
+
+---
+
+## MultimodalDataset helper (`base_multimodal.py`)
+
+All current benchmarks subclass this instead of `Dataset` directly. It:
+- Fixes `modality` to `"multimodal"` — subclasses don't repeat it.
+- Provides `_validate_sample(sample)` — call it before `yield` in `__iter__` to
+  catch placeholder/array mismatches early.
+
+```python
+class MultimodalDataset(Dataset):
     @property
-    @abstractmethod
-    def name(self) -> str:
-        """Short identifier used in the registry and stored in results."""
-        ...
+    def modality(self) -> Literal[...]:
+        return "multimodal"
 
-    @abstractmethod
-    def __iter__(self) -> Iterator[Sample]:
-        """Yield one Sample per benchmark record. Lazy loading preferred."""
-        ...
-
-    @abstractmethod
-    def __len__(self) -> int:
-        """Number of samples in the dataset (used for progress tracking)."""
+    def _validate_sample(self, sample: Sample) -> None:
+        # Raises ValueError if:
+        #   - input_ts is empty
+        #   - any <TS_N> token references an out-of-range index
         ...
 ```
 
 ---
 
-## Concrete subclass pattern
+## SampleFormatter (`formatters.py`)
 
-Each benchmark file must:
+Converts between the canonical (separate) form and the combined form a model may need.
+Datasets always emit separate form; `ModelWrapper.format_input` calls the formatter.
 
-1. Subclass `Dataset`.
-2. Accept the path to the raw benchmark file in `__init__` — **do not copy or
-   mutate the file**.
-3. Parse the original format lazily in `__iter__` (avoid loading the whole file into
-   memory).
-4. Map the benchmark's native fields to `Sample.input` and `Sample.target` in the
-   format the `ModelWrapper` expects (see `core/sample.py` for the contract).
-5. Set `modality` to match the benchmark type.
+```python
+class SampleFormatter:
+    @staticmethod
+    def to_combined(sample: Sample,
+                    serializer: TSSerializer = DefaultTSSerializer()) -> Sample:
+        """Replace <TS_N> tokens with serialized arrays; clears input_ts."""
+
+    @staticmethod
+    def to_separate(sample: Sample) -> Sample:
+        """Identity — canonical form is already separate."""
+```
+
+`DefaultTSSerializer` renders arrays as `[v0, v1, ...]` (4 sig-fig). Implement the
+`TSSerializer` protocol to swap in a different representation without changing any other
+code.
+
+**Never mutates the input Sample** — always returns a new one.
+
+---
+
+## Reference implementation (`template.py`)
+
+`JSONLMultimodalDataset` reads a JSONL file where each line is:
+```json
+{"context": "...<TS_0>...", "ts": [[1.2, 3.4, ...]], "answer": "..."}
+```
+
+**This is the file to copy when adding a new benchmark.** Override `_parse_record` if
+the benchmark uses different key names; override `__iter__` for non-JSONL formats.
+
+---
+
+## How to add a new benchmark
+
+1. Create `fmeval/core/datasets/<benchmark>.py`.
+2. Subclass `MultimodalDataset`.
+3. In `__init__`: accept `data_path: Path` + benchmark-specific params; load
+   index/metadata only (lazy loading in `__iter__`).
+4. In `__iter__`:
+   - Read one record at a time — never mutate the raw file.
+   - Build `input_text` with `<TS_N>` tokens at the correct positions.
+   - Put raw numpy arrays in `input_ts` in matching order.
+   - Set `output` to the ground-truth text string.
+   - Call `self._validate_sample(sample)` before `yield`.
+5. Register the class in `fmeval/config/benchmark_registry.py` — zero other changes.
 
 ---
 

@@ -49,7 +49,7 @@ Hard rule: no business logic in the UI. It never reads a raw benchmark file or c
 
 ### Layer 2 — Orchestration
 
-`EvaluationService` is the single class the UI talks to. It owns the workflow and does none of the actual work. Public surface: `list_models()`, `list_benchmarks()` (delegates to registries), `run_evaluation(config) -> job_id`, `poll_jobs()`, `get_dashboard_data()`, `export_csv()`. Everything below is invoked by the service; nothing below ever calls back up.
+`EvaluationService` is the single class the UI talks to. It owns the workflow and does none of the actual work. Public surface: `list_models()`, `list_benchmarks()` (delegates to registries), `run_evaluation(config) -> job_id`, `poll_jobs()`, `get_dashboard_data()`, `list_exp_ids()`, `query_results(filters)`, `group_results(results)`, `export_csv()`. Everything below is invoked by the service; nothing below ever calls back up.
 
 ### Layer 3 — Domain (core abstractions)
 
@@ -73,64 +73,80 @@ These three ABCs and one dataclass are the heart of the system. Get their interf
 
 ### Layer 5 — Data & Configuration
 
-`ResultsRepository` is a thin SQLite wrapper storing `EvaluationResult` records (model name, benchmark name, modality, metrics dict, timestamp, execution time). `ModelRegistry` and `BenchmarkRegistry` are loaded at startup and answer two questions: "what's available?" for the UI, and "give me object X" for the service.
+`ResultsRepository` is a thin SQLite wrapper storing `EvaluationResult` records (model name, benchmark name, modality, metrics dict, timestamp, execution time, `exp_id`, `max_samples`). Schema migrations run automatically in `__init__` so existing DBs upgrade on first open. `ModelRegistry` and `BenchmarkRegistry` are loaded at startup and answer two questions: "what's available?" for the UI, and "give me object X" for the service.
 
 ### Key interactions
 
-**Run flow (write path).** `ConfigPage → EvaluationService.run_evaluation(config)`. The service resolves names through the registries into a `Dataset` and a `ModelWrapper`, checks `model.supports(dataset.modality)`, asks `ScriptGenerator` for a script, hands it to the configured `Runner`, persists an `EvaluationJob` as `queued`, and returns immediately — the UI never blocks. Later, `poll_jobs()` asks the `Runner` for status; on completion it calls `ResultParser` → selects the right `Metric` by modality → `compute` → `ResultsRepository.save`.
+**Run flow (write path).** `ConfigPage → EvaluationService.run_evaluation(config)`. The service resolves names through the registries into a `Dataset` and a `ModelWrapper`, checks modality compatibility, submits to `MockRunner` (which runs `LocalEvaluationPipeline` in a background thread), and returns a `job_id` immediately — the UI never blocks. Later, `poll_jobs()` asks the runner for status; on completion it saves an `EvaluationResult` to `ResultsRepository`.
 
 **Dashboard (read path).** `DashboardPage → get_dashboard_data() → ResultsRepository.query → charts`. The read and write paths are fully independent, which is what satisfies the "configuration phase vs. asynchronous results-viewing phase" requirement.
 
-### Suggested layout
+### Layout
 
 ```
 fmeval/
   __init__.py     # package root
-  app/            # Streamlit/Gradio UI: ConfigPage + DashboardPage
+  app/                              # ✅ Streamlit UI
+    main.py                         # ✅ entry point + @st.cache_resource singleton
+    config_page.py                  # ✅ render_config_page(service)
+    dashboard_page.py               # ✅ render_dashboard_page(service)
   core/
-    sample.py              # ✅ Sample dataclass (input_text, input_ts, output)
+    sample.py                       # ✅ Sample dataclass (input_text, input_ts, output)
     datasets/
-      base.py              # ✅ Dataset ABC
-      base_multimodal.py   # ✅ MultimodalDataset (modality fixed, validation)
-      formatters.py        # ✅ SampleFormatter (combined ↔ separate)
-      template.py          # ✅ JSONLMultimodalDataset (copy-paste template)
-      <benchmark>.py       # one file per concrete benchmark
+      base.py                       # ✅ Dataset ABC
+      base_multimodal.py            # ✅ MultimodalDataset (modality fixed, validation)
+      formatters.py                 # ✅ SampleFormatter (combined ↔ separate)
+      template.py                   # ✅ JSONLMultimodalDataset (copy-paste template)
+      tsexam1.py                    # ✅ TimeSeriesExam1Dataset (HuggingFace, 746 MCQ)
     models/
-      base.py              # ✅ ModelWrapper ABC
-      mock_model.py        # ✅ MockModel (fixed-answer baseline)
-      __init__.py          # ✅
+      base.py                       # ✅ ModelWrapper ABC
+      mock_model.py                 # ✅ MockModel (fixed-answer baseline)
+      __init__.py                   # ✅
     metrics/
-      base.py              # ✅ Metric ABC
-      mcq_metrics.py       # ✅ MCQMetrics + extract_letter()
-      __init__.py          # ✅
-  evaluation/              # ✅ Local synchronous evaluation pipeline
-    pipeline.py            # ✅ LocalEvaluationPipeline
-    result.py              # ✅ RunResult, SamplePrediction
-    __init__.py            # ✅
-  execution/      # ScriptGenerator, Runner ABC, SlurmRunner, MockRunner,
-                  # PrecomputedRunner, ResultParser, EvaluationJob, JobStatus
-  storage/        # ResultsRepository (SQLite), EvaluationResult
-  config/         # ModelRegistry, BenchmarkRegistry
+      base.py                       # ✅ Metric ABC
+      mcq_metrics.py                # ✅ MCQMetrics + extract_letter()
+      __init__.py                   # ✅
+  evaluation/                       # ✅ Local synchronous evaluation pipeline
+    pipeline.py                     # ✅ LocalEvaluationPipeline
+    result.py                       # ✅ RunResult, SamplePrediction
+    __init__.py                     # ✅
+  execution/                        # ✅ Async execution layer
+    job.py                          # ✅ EvaluationJob, JobStatus
+    runner.py                       # ✅ Runner ABC
+    mock_runner.py                  # ✅ MockRunner (ThreadPoolExecutor, local CPU)
+    __init__.py                     # ✅
+  storage/                          # ✅ SQLite persistence
+    models.py                       # ✅ EvaluationResult dataclass
+    repository.py                   # ✅ ResultsRepository
+    __init__.py                     # ✅
+  config/                           # ✅ Registries
+    model_registry.py               # ✅ ModelInfo, ModelRegistry, build_default_model_registry()
+    benchmark_registry.py           # ✅ BenchmarkInfo, BenchmarkRegistry, build_default_benchmark_registry()
+    __init__.py                     # ✅
   services/
-    __init__.py
-    types.py              # ✅ EvaluationConfig, DashboardData
-    evaluation_service.py # EvaluationService (stub)
+    __init__.py                     # ✅
+    types.py                        # ✅ EvaluationConfig (+ max_samples, exp_id), DashboardData, ResultsFilter, GroupedResult
+    evaluation_service.py           # ✅ EvaluationService (fully implemented)
 data/
-  dummy/          # tiny JSONL datasets for local / dummy runs
-  precomputed/    # canned cluster output logs for the offline demo
+  results.db                        # SQLite results DB (auto-created on first run)
 notebooks/
-  tsexam1_demo.ipynb       # ✅ Executed demo: sample inspection + evaluation walkthrough
-  build_notebook.py        # script that regenerates the notebook
+  tsexam1_demo.ipynb                # ✅ Executed demo: sample inspection + evaluation walkthrough
+  build_notebook.py                 # script that regenerates the notebook
 tests/
   core/
-    test_sample.py         # ✅
-    test_formatters.py     # ✅
-    test_jsonl_dataset.py  # ✅
-    test_tsexam1.py        # ✅
-    test_mcq_metrics.py    # ✅
-    test_mock_model.py     # ✅
+    test_sample.py                  # ✅
+    test_formatters.py              # ✅
+    test_jsonl_dataset.py           # ✅
+    test_tsexam1.py                 # ✅
+    test_mcq_metrics.py             # ✅
+    test_mock_model.py              # ✅
   evaluation/
-    test_pipeline.py       # ✅ LocalEvaluationPipeline + RunResult (30 tests)
+    test_pipeline.py                # ✅ LocalEvaluationPipeline + RunResult (30 tests)
+  storage/
+    test_repository.py              # ✅ ResultsRepository: save/query/list_exp_ids/migration
+  services/
+    test_evaluation_service.py      # ✅ query_results, group_results, exp_id auto-slug
+pyproject.toml    # package install config (pip install -e .)
 ARD_Project.pdf   # ground-truth requirements — consult when unsure
 CLAUDE.md
 ```
@@ -145,7 +161,7 @@ CLAUDE.md
 - **Storage:** local DB / structured files — **SQLite** is the natural fit for the POC.
 - **Async by nature:** evaluations are NOT real-time. Jobs go into a queue; the UI must clearly separate the *configuration* phase from the *results-viewing* phase. The app must stay responsive (screen transitions / standard queries < 2s) while jobs run.
 - **Metrics:** multimodal MCQ tasks → `MCQMetrics` (accuracy, balanced\_accuracy, F1, precision, recall — all macro + weighted + per-class).
-- **Stored per run:** model name, benchmark name, timestamp, execution time, computed metrics.
+- **Stored per run:** model name, benchmark name, modality, timestamp, execution time, computed metrics, `exp_id` (experiment label), `max_samples`.
 
 ### POC / demo constraint (important)
 Real runs can take hours and depend on cluster availability, so the system **must support an offline/simulated mode**: either a drastically reduced "dummy" dataset run locally, OR parsing pre-computed logs to visualize instantly. Build the execution layer behind an interface with a **MockRunner** and a **SlurmRunner**, switchable by config, so the demo never depends on a live queue.
@@ -166,12 +182,11 @@ The first thing to build is the **vertical slice** from the ARD's POC plan: one 
 
 ## 6. Commands
 
-> Fill these in as the project takes shape; keep them accurate so Claude can verify its own work.
-
 ```bash
-# environment: .venv at repo root (Python 3.14)
-# install:        pip install -r requirements.txt
-# run the app:    streamlit run fmeval/app/main.py
+# environment: .venv at repo root (Python 3.14, managed with uv)
+# install deps:   uv pip install -r requirements.txt --python .venv/bin/python
+# install pkg:    uv pip install -e . --python .venv/bin/python   ← required once for imports to work
+# run the app:    .venv/bin/streamlit run fmeval/app/main.py
 # run tests:      .venv/bin/pytest
 # lint/format:    .venv/bin/ruff check . && .venv/bin/ruff format .
 # type check:     .venv/bin/mypy fmeval

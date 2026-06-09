@@ -33,6 +33,7 @@ class SamplePrediction:
     predicted_letter: str | None # extracted A-D, or None if unparseable
     correct_letter: str          # extracted from raw_target (always present)
     is_correct: bool
+    input_text: str = ""         # Sample.input_text (prompt template with placeholders)
     metadata: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
@@ -72,6 +73,7 @@ class RunResult:
         for sp in self.sample_predictions:
             row: dict[str, Any] = {
                 "sample_idx": sp.sample_idx,
+                "input_text": sp.input_text,
                 "raw_prediction": sp.raw_prediction,
                 "raw_target": sp.raw_target,
                 "predicted_letter": sp.predicted_letter,

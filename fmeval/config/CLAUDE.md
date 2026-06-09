@@ -1,8 +1,7 @@
 # fmeval/config/ — Layer 5 (part 2): Registries
 
-Loaded once at startup. Answers two questions for the system: "what models and
-benchmarks are available?" (for the UI dropdowns) and "give me the object for name X"
-(for `EvaluationService`).
+Loaded once at startup. Answers two questions: "what is available?" (for UI dropdowns)
+and "give me the object for name X" (for `EvaluationService`).
 
 **Dependency rule:** `config/` may import from `core/` to instantiate `ModelWrapper`
 and `Dataset` subclasses. It must not import from `app/`, `services/`, `execution/`,
@@ -14,11 +13,14 @@ or `storage/`.
 
 ```
 config/
+  __init__.py             ✅ exports all four public names
   CLAUDE.md
-  model_registry.py       ← ModelRegistry
-  benchmark_registry.py   ← BenchmarkRegistry
-  settings.py             ← app-level config (runner mode, db path, data dirs)
+  model_registry.py       ✅ ModelInfo, ModelRegistry, build_default_model_registry()
+  benchmark_registry.py   ✅ BenchmarkInfo, BenchmarkRegistry, build_default_benchmark_registry()
 ```
+
+`settings.py` is not needed for the POC — runner mode and db path are wired in
+`fmeval/app/main.py` directly. Add it when the Slurm runner requires env-level config.
 
 ---
 
@@ -27,18 +29,28 @@ config/
 ```python
 @dataclass
 class ModelInfo:
-    name: str                        # registry key, e.g. "chronos"
-    display_name: str                # shown in UI dropdown
+    name: str           # registry key used in EvaluationConfig
+    display_name: str   # shown in UI dropdowns
     modalities: list[str]
-    default_model_id: str            # HuggingFace repo id
 
 class ModelRegistry:
+    def register(self, info: ModelInfo, factory: Callable[[], ModelWrapper]) -> None: ...
     def list(self) -> list[ModelInfo]: ...
-    def get(self, name: str, **kwargs) -> ModelWrapper: ...
+    def get(self, name: str) -> ModelWrapper: ...  # calls factory() — fresh instance each time
 ```
 
-`get` delegates to `get_model()` from `fmeval.core.models.registry`. The registry
-here is the configuration layer on top of the core factory.
+**Factory pattern:** `get()` calls `factory()` on every invocation so each submitted
+job gets a fresh `ModelWrapper` with no shared state.
+
+### Currently registered models
+
+| name | display_name | factory |
+|---|---|---|
+| `mock_always_a` | Mock Model (always A) | `MockModel("A")` |
+| `mock_always_b` | Mock Model (always B) | `MockModel("B")` |
+| `mock_always_c` | Mock Model (always C) | `MockModel("C")` |
+
+To add a real LLM: `registry.register(ModelInfo(...), lambda: MyLLMWrapper(...))`.
 
 ---
 
@@ -50,26 +62,33 @@ class BenchmarkInfo:
     name: str
     display_name: str
     modality: str
-    data_path: Path
 
 class BenchmarkRegistry:
+    def register(self, info: BenchmarkInfo, factory: Callable[[int | None], Dataset]) -> None: ...
     def list(self) -> list[BenchmarkInfo]: ...
-    def get(self, name: str) -> Dataset: ...
+    def get(self, name: str, max_samples: int | None = None) -> Dataset: ...
 ```
 
-`get` instantiates the correct `Dataset` subclass with the configured data path.
+The factory receives `max_samples` from `EvaluationConfig` so the dataset is
+constructed with the correct size limit without storing config state on the registry.
+
+### Currently registered benchmarks
+
+| name | display_name | factory |
+|---|---|---|
+| `tsexam1` | TimeSeriesExam1 (HuggingFace) | `TimeSeriesExam1Dataset(max_samples=…)` |
 
 ---
 
-## Settings (`settings.py`)
+## Startup wiring (in `app/main.py`)
 
-Centralizes the few knobs the app needs at runtime:
-
-- `RUNNER_MODE`: `"mock"` | `"slurm"` | `"precomputed"` (read from env or config file)
-- `DB_PATH`: path to the SQLite database file
-- `DATA_DIR`: root for `data/dummy/` and `data/precomputed/`
-- `SLURM_*`: cluster-specific vars (partition, account, etc.) — only relevant when
-  `RUNNER_MODE = "slurm"`
-
-The active `Runner` implementation is selected here based on `RUNNER_MODE` and
-injected into `EvaluationService`.
+```python
+@st.cache_resource
+def get_service():
+    return EvaluationService(
+        model_registry=build_default_model_registry(),
+        benchmark_registry=build_default_benchmark_registry(),
+        runner=MockRunner(),
+        repository=ResultsRepository(db_path),
+    )
+```

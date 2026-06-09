@@ -139,6 +139,7 @@ class LocalEvaluationPipeline:
                     predicted_letter=pred_letter,
                     correct_letter=correct_letter,
                     is_correct=(pred_letter == correct_letter),
+                    input_text=sample.input_text,
                     metadata=dict(sample.metadata),
                 )
             )

@@ -1,7 +1,7 @@
 # fmeval/app/ — Layer 1: Presentation
 
-Streamlit/Gradio UI. Two pages, nothing else. All business logic lives in the layers
-below; this layer only calls `EvaluationService` and renders what comes back.
+Streamlit UI. Two tabs, nothing else. All business logic lives in the layers below;
+this layer only calls `EvaluationService` and renders what comes back.
 
 **Dependency rule:** `app/` may import from `fmeval.services` only. It must never
 import from `core`, `execution`, `storage`, or `config` directly.
@@ -12,43 +12,89 @@ import from `core`, `execution`, `storage`, or `config` directly.
 
 ```
 app/
+  __init__.py         ✅ empty package marker
   CLAUDE.md
-  main.py          ← entry point: `streamlit run fmeval/app/main.py`
-  config_page.py   ← ConfigPage
-  dashboard_page.py← DashboardPage
+  main.py             ✅ entry point + @st.cache_resource service singleton
+  config_page.py      ✅ render_config_page(service)
+  dashboard_page.py   ✅ render_dashboard_page(service)
 ```
 
 ---
 
-## ConfigPage (`config_page.py`)
+## Launch
 
-Responsibilities:
-- On load, call `EvaluationService.list_models()` and `list_benchmarks()` to populate
-  the dropdowns. Never hard-code model/benchmark names here.
-- Collect: selected model(s), selected benchmark, runner mode (Mock / Slurm /
-  Precomputed), any optional params (forecast horizon, context length, etc.).
-- On "Run": call `EvaluationService.run_evaluation(config)`, receive a `job_id`,
-  and surface it to the user. Return immediately — do not poll or block.
+```bash
+streamlit run fmeval/app/main.py
+```
 
-## DashboardPage (`dashboard_page.py`)
+## Service singleton (`main.py`)
 
-Responsibilities:
-- Call `EvaluationService.get_dashboard_data()` and render the result as charts
-  and comparison tables.
-- Call `EvaluationService.poll_jobs()` to show live job statuses (queued / running /
-  completed / failed). A simple periodic refresh (e.g. `st.rerun`) is fine for the POC.
-- Provide a "Export CSV" button that calls `EvaluationService.export_csv()`.
+```python
+@st.cache_resource
+def get_service() -> EvaluationService:
+    db_path = Path(__file__).parent.parent.parent / "data" / "results.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    return EvaluationService(
+        model_registry=build_default_model_registry(),
+        benchmark_registry=build_default_benchmark_registry(),
+        runner=MockRunner(),
+        repository=ResultsRepository(db_path),
+    )
+```
 
-## main.py
+`@st.cache_resource` creates one `EvaluationService` per server process. The
+in-memory `_jobs` dict on the service persists across tab switches and rerenders
+within a session. Results in SQLite persist across server restarts.
 
-Wires the two pages into a navigation structure (sidebar or tabs). Initialises
-`EvaluationService` once and passes it to both pages.
+---
+
+## ConfigPage (`config_page.py`) — `render_config_page(service)`
+
+- **Model dropdown** populated from `service.list_models()` (display_name → name map)
+- **Benchmark dropdown** populated from `service.list_benchmarks()`
+- **Max samples slider** (10–200, default 50)
+- **Experiment ID text input** — free-text label (max 64 chars); blank → service
+  generates an auto-slug `"run-YYYYMMDD-HHMMSS"`. Resolved exp_id shown in success toast.
+- **"Run Evaluation" button** → `service.run_evaluation(config)` in try/except;
+  shows `st.success("Job {id} started · exp: {exp_id}")` or `st.error(msg)`
+- **Recent Jobs table** at the bottom: calls `service.poll_jobs()` on each render
+  (advances job states); includes `Exp ID` column.
+
+---
+
+## DashboardPage (`dashboard_page.py`) — `render_dashboard_page(service)`
+
+- **Refresh button** → `service.poll_jobs()` + `st.rerun()`
+- **Export CSV button** → `st.download_button(data=service.export_csv())`
+- **Jobs table** — all jobs tracked this session (includes `Exp ID` column)
+- **Filter panel** (`st.expander`) — multiselect for Experiment IDs, Models, Benchmarks;
+  optional date-range inputs; "Clear Filters" button. Uses `st.session_state` keys so
+  selections survive rerenders. Empty selection = no restriction on that dimension.
+- **View toggle** — `"Individual runs"` or `"Grouped by Exp ID"`
+  - *Individual*: grouped bar chart (x=Model, y=Accuracy, color=Benchmark, hover shows
+    exp_id); results table with `on_select="rerun"` (Streamlit 1.35+) — clicking a row
+    navigates to the **Run Detail** view
+  - *Grouped*: bar chart with error bars (mean ± std on Accuracy); grouped comparison
+    table showing `"0.8200 ± 0.0300"` strings for headline metrics with best-row
+    highlight; n_samples and n_unparseable are summed across runs in each group
+- **Run Detail view** — replaces the chart + table when a row is selected:
+  - Header with job metadata (model, benchmark, exp_id, samples, timestamp, exec time)
+  - Four metric cards: Accuracy, Balanced Acc, F1 Macro, F1 Weighted
+  - Filter radio: All / Correct only / Incorrect only
+  - Per-sample table: `#`, Question (truncated), Correct letter, Predicted letter,
+    Result (✓/✗ with color), dynamic metadata columns (difficulty, category, etc.)
+  - Expandable section with full question text and raw model output per sample
+  - "← Back" button returns to the comparison table
+  - If no sample data is stored (run predates this feature), shows a notice instead
+
+Session state keys managed by the dashboard:
+`dash_filter_exp_ids`, `dash_filter_models`, `dash_filter_benchmarks`,
+`dash_date_from`, `dash_date_to`, `dash_view_mode`, `selected_job_id`
 
 ---
 
 ## Constraints
 
-- No metric computation, no file parsing, no SQL queries.
-- All user-visible error messages come from the service layer as structured data,
-  not from caught exceptions in UI callbacks.
+- No metric computation, no file I/O, no SQL.
+- `ValueError` from `run_evaluation` (modality mismatch) → `st.error()`.
 - Target responsiveness: page transitions and standard queries < 2 s.

@@ -9,7 +9,7 @@ will sit alongside this once implemented; both paths produce a `RunResult` that 
 be analysed identically.
 
 **Status: implemented.** Both files are written and tested
-(`tests/evaluation/test_pipeline.py`, 30 tests).
+(`tests/evaluation/test_pipeline.py`, 32 tests).
 
 ---
 
@@ -57,9 +57,12 @@ The complete output of one evaluation run. Key methods:
 accuracy, balanced\_accuracy, f1\_macro/weighted, precision\_macro/weighted,
 recall\_macro/weighted, n\_samples, n\_unparseable, and per-class f1/precision/recall/support.
 
-`SamplePrediction` stores per-sample: `raw_prediction`, `raw_target`,
+`SamplePrediction` stores per-sample: `input_text` (prompt template from the
+dataset, with `<TS_N>` placeholders), `raw_prediction`, `raw_target`,
 `predicted_letter`, `correct_letter`, `is_correct`, `metadata` (all benchmark
-fields so slicing never requires re-joining to the dataset).
+fields so slicing never requires re-joining to the dataset). `input_text`
+defaults to `""` for backwards compatibility but is always populated by the
+pipeline.
 
 ---
 

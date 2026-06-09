@@ -1,11 +1,10 @@
 # fmeval/execution/ — Layer 4: Execution
 
-Handles everything between "a run has been requested" and "raw output logs exist on
-disk." The key design point: the `Runner` ABC is the POC seam — swap implementations
-without touching anything else.
+Handles everything between "a run has been requested" and "a RunResult is available."
+The `Runner` ABC is the key seam — swap implementations without touching anything else.
 
-**Dependency rule:** `execution/` may import from `core/` (to type-hint `Dataset`,
-`ModelWrapper`, `Sample`). It must not import from `app/`, `services/`, or `storage/`.
+**Dependency rule:** `execution/` may import from `core/` and `evaluation/`. It must
+not import from `app/`, `services/`, or `storage/`.
 
 ---
 
@@ -13,22 +12,22 @@ without touching anything else.
 
 ```
 execution/
+  __init__.py       ✅ exports EvaluationJob, JobStatus, Runner, MockRunner
   CLAUDE.md
-  script_generator.py   ← ScriptGenerator
-  runner.py             ← Runner ABC + JobHandle
-  slurm_runner.py       ← SlurmRunner
-  mock_runner.py        ← MockRunner
-  precomputed_runner.py ← PrecomputedRunner
-  result_parser.py      ← ResultParser
-  job.py                ← EvaluationJob dataclass + JobStatus enum
+  job.py            ✅ EvaluationJob dataclass + JobStatus enum
+  runner.py         ✅ Runner ABC
+  mock_runner.py    ✅ MockRunner (ThreadPoolExecutor, local CPU)
 ```
+
+Slurm execution is deferred. When ready, add `slurm_runner.py` that implements
+`Runner` without changing any other layer.
 
 ---
 
 ## EvaluationJob & JobStatus (`job.py`)
 
 ```python
-class JobStatus(Enum):
+class JobStatus(str, Enum):   # inherits str — serializes without .value
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -41,19 +40,14 @@ class EvaluationJob:
     benchmark_name: str
     modality: str
     status: JobStatus
-    handle: Any          # runner-specific handle (e.g. slurm job id, file path)
     created_at: datetime
+    max_samples: int
+    exp_id: str = ""           # experiment label; propagated to EvaluationResult on completion
+    handle: Any = None         # Future for MockRunner; Slurm job ID for SlurmRunner
     error_message: str | None = None
 ```
 
----
-
-## ScriptGenerator (`script_generator.py`)
-
-Builds a self-contained `sbatch` script from an `EvaluationConfig`. The script
-activates the environment, calls the evaluation entry point with the right model and
-benchmark arguments, and writes predictions + targets to a log file. Returns the
-script as a string (caller writes it to disk or passes it to the runner).
+`handle` is typed `Any` — the service never inspects it directly.
 
 ---
 
@@ -62,49 +56,48 @@ script as a string (caller writes it to disk or passes it to the runner).
 ```python
 class Runner(ABC):
     @abstractmethod
-    def submit(self, script: str, job: EvaluationJob) -> Any:
-        """Submit the script; return a runner-specific handle."""
+    def submit(self, job: EvaluationJob, dataset: Dataset, model: ModelWrapper) -> Any:
+        """Start the job; return a runner-specific handle stored on job.handle."""
         ...
 
     @abstractmethod
-    def get_status(self, handle: Any) -> JobStatus:
-        """Poll the runner for current job status."""
+    def get_status(self, job: EvaluationJob) -> JobStatus:
+        """Return current status by inspecting job.handle."""
         ...
 
     @abstractmethod
-    def get_output_path(self, handle: Any) -> Path:
-        """Return the path where the job wrote its output log."""
+    def get_result(self, job: EvaluationJob) -> RunResult:
+        """Return the completed RunResult. Raises RuntimeError if not yet done."""
         ...
 ```
 
-### Implementations
-
-`SlurmRunner` — shells out to `sbatch` to submit and `squeue` to poll status.
-For the POC this may be left as a stub that raises `NotImplementedError` if the
-cluster is unreachable.
-
-`MockRunner` — runs the evaluation inline (no subprocess), using a tiny dummy dataset
-from `data/dummy/`. Completes synchronously; returns `COMPLETED` on the first poll.
-This is how the demo runs without a cluster.
-
-`PrecomputedRunner` — ignores the script entirely and returns a handle that points to
-a pre-existing log file in `data/precomputed/`. Allows instant dashboard demos from
-canned results.
+The interface passes `dataset` and `model` directly (no `ScriptGenerator` for the POC).
+A future `SlurmRunner` would generate the sbatch script internally.
 
 ---
 
-## ResultParser (`result_parser.py`)
+## MockRunner (`mock_runner.py`)
 
-Reads the raw output log produced by a completed job and returns two parallel
-sequences: `predictions` and `targets`, typed correctly for the modality (list of
-strings for text, numpy arrays for time-series). The parser must not compute metrics —
-it only extracts and structures the raw data.
+Runs `LocalEvaluationPipeline` in a `ThreadPoolExecutor` (max 2 workers). Uses
+`concurrent.futures.Future` for status polling — `.done()`, `.running()`, `.exception()`
+and `.result()` are all available without a lock on the result itself.
+
+`MCQMetrics` is hardcoded as the metric — all current datasets are multimodal MCQ.
+When a non-MCQ dataset is added, pass a metric factory into `MockRunner.__init__`.
+
+```python
+class MockRunner(Runner):
+    def __init__(self, max_workers: int = 2) -> None: ...
+    def submit(self, job, dataset, model) -> Future: ...
+    def get_status(self, job) -> JobStatus: ...
+    def get_result(self, job) -> RunResult: ...
+```
 
 ---
 
 ## Constraints
 
-- The same `ModelWrapper.predict` code path runs in all three runner modes. The runner
-  controls *where* it executes; the model wrapper controls *how*.
-- `MockRunner` and `PrecomputedRunner` must be fully usable with no network access and
-  no cluster credentials.
+- `MockRunner` and any future `PrecomputedRunner` must be usable with no cluster
+  credentials and no network access beyond the initial dataset download.
+- The same `ModelWrapper.predict` code path runs regardless of runner.
+- Never add Slurm-specific logic to `Runner` ABC or `EvaluationJob` — keep them generic.

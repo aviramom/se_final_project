@@ -112,6 +112,15 @@ def test_sample_predictions_are_correct_type():
     assert isinstance(result.sample_predictions[0], SamplePrediction)
 
 
+def test_sample_prediction_input_text_populated():
+    samples = _make_samples(["A) yes", "B) no"])
+    ds = InMemoryDataset(samples)
+    result = _make_pipeline().run(ds)
+    for i, sp in enumerate(result.sample_predictions):
+        assert sp.input_text == samples[i].input_text
+        assert sp.input_text != ""
+
+
 def test_empty_dataset_raises():
     ds = InMemoryDataset([])
     with pytest.raises(ValueError, match="empty"):

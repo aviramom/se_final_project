@@ -9,6 +9,7 @@ from fmeval.config.benchmark_registry import BenchmarkInfo, BenchmarkRegistry
 from fmeval.config.model_registry import ModelInfo, ModelRegistry
 from fmeval.evaluation.result import SamplePrediction
 from fmeval.execution.job import EvaluationJob, JobStatus
+from fmeval.execution.mock_runner import MockRunner
 from fmeval.execution.runner import Runner
 from fmeval.services.types import (
     DashboardData,
@@ -54,6 +55,13 @@ class EvaluationService:
         Never blocks — returns immediately after handing the job to the Runner.
         Raises ValueError if the model's modality does not match the benchmark.
         """
+        model_info = self._model_registry.get_info(config.model_name)
+        if model_info.requires_gpu and isinstance(self._runner, MockRunner):
+            raise ValueError(
+                f"'{model_info.display_name}' requires a GPU and cannot run locally. "
+                f"Launch with FMEVAL_RUNNER=slurm, or select a Mock model for local testing."
+            )
+
         model = self._model_registry.get(config.model_name)
         dataset = self._benchmark_registry.get(
             config.benchmark_name, max_samples=config.max_samples

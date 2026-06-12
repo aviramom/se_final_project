@@ -16,6 +16,7 @@ class ModelInfo:
     name: str          # registry key used in EvaluationConfig
     display_name: str  # shown in dropdowns
     modalities: list[str]
+    requires_gpu: bool = False  # True → cannot run under MockRunner (local)
 
 
 class ModelRegistry:
@@ -30,6 +31,13 @@ class ModelRegistry:
 
     def list(self) -> list[ModelInfo]:
         return [info for info, _ in self._registry.values()]
+
+    def get_info(self, name: str) -> ModelInfo:
+        if name not in self._registry:
+            available = list(self._registry)
+            raise KeyError(f"Unknown model '{name}'. Available: {available}")
+        info, _ = self._registry[name]
+        return info
 
     def get(self, name: str) -> ModelWrapper:
         if name not in self._registry:
@@ -71,6 +79,7 @@ def build_default_model_registry() -> ModelRegistry:
             name="chatts-8b",
             display_name="ChatTS-8B (ByteDance Research)",
             modalities=["multimodal"],
+            requires_gpu=True,
         ),
         factory=lambda: ChatTSModel(
             checkpoint_path=os.environ.get(

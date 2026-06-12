@@ -24,16 +24,22 @@ app/
 ## Launch
 
 ```bash
-# Local mode (MockRunner — no cluster needed, default)
+# Local mode (MockRunner — mock models only, no cluster needed)
 .venv/bin/streamlit run fmeval/app/main.py
+# or: ./run.sh mock
 
-# Slurm mode (SlurmRunner — submits real jobs to slurm.bgu.ac.il)
-FMEVAL_RUNNER=slurm .venv/bin/streamlit run fmeval/app/main.py
+# ChatTS-8B on Slurm GPU node
+./run.sh chatts
 
-# Slurm mode with non-default resources
-FMEVAL_RUNNER=slurm SLURM_PARTITION=rtx3090 SLURM_GPUS=1 \
-  .venv/bin/streamlit run fmeval/app/main.py
+# Qwen3-VL-8B-Instruct on Slurm GPU node
+./run.sh qwen
+
+# Both GPU models available in the same session
+./run.sh all
 ```
+
+`run.sh` at the repo root is a convenience wrapper that sets all required env vars.
+See `README.md` for the full env var reference and manual launch commands.
 
 ## Runner selection (`main.py` — `_build_runner()`)
 
@@ -55,17 +61,10 @@ The runner is chosen at startup from the `FMEVAL_RUNNER` env var (default `"mock
 | `SLURM_PYTHON_BIN` | `/home/aviramom/fmeval_project/.venv/bin/python` |
 | `SLURM_FMEVAL_DIR` | `/home/aviramom/fmeval_project` |
 | `CHATTS_MODEL_PATH` | *(unset — falls back to HF Hub download)* |
+| `QWEN_VL_MODEL_PATH` | *(unset — falls back to HF Hub download)* |
 
-`CHATTS_MODEL_PATH` is forwarded into the sbatch `env_setup_commands` automatically
-by `_build_runner()`. Set it locally to a pre-downloaded path on the cluster so the
-worker skips the 16 GB download on every job:
-
-```bash
-FMEVAL_RUNNER=slurm SLURM_PARTITION=<gpu-partition> SLURM_GPUS=1 \
-SLURM_MEM_GB=32 SLURM_TIME_LIMIT=04:00:00 \
-CHATTS_MODEL_PATH=/home/aviramom/models/chatts-8b \
-.venv/bin/streamlit run fmeval/app/main.py
-```
+Both model weight path vars are forwarded into the sbatch `env_setup_commands`
+automatically by `_build_runner()` so the cluster worker sees them at runtime.
 
 ## Service singleton (`main.py`)
 

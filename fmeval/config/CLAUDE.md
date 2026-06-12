@@ -44,13 +44,18 @@ job gets a fresh `ModelWrapper` with no shared state.
 
 ### Currently registered models
 
-| name | display_name | factory |
-|---|---|---|
-| `mock_always_a` | Mock Model (always A) | `MockModel("A")` |
-| `mock_always_b` | Mock Model (always B) | `MockModel("B")` |
-| `mock_always_c` | Mock Model (always C) | `MockModel("C")` |
+| name | display_name | requires_gpu | weight env var | factory |
+|---|---|---|---|---|
+| `mock_always_a` | Mock Model (always A) | No | — | `MockModel("A")` |
+| `mock_always_b` | Mock Model (always B) | No | — | `MockModel("B")` |
+| `mock_always_c` | Mock Model (always C) | No | — | `MockModel("C")` |
+| `chatts-8b` | ChatTS-8B (ByteDance Research) | Yes | `CHATTS_MODEL_PATH` | `ChatTSModel(checkpoint_path=…)` |
+| `qwen3-vl-8b` | Qwen3-VL-8B-Instruct (vision) | Yes | `QWEN_VL_MODEL_PATH` | `QwenVLModel(checkpoint_path=…)` |
 
-To add a real LLM: `registry.register(ModelInfo(...), lambda: MyLLMWrapper(...))`.
+GPU model weight paths are read from env vars at factory time and forwarded into the
+sbatch script by `_build_runner()` in `app/main.py`.
+
+To add a new model: one new file in `fmeval/core/models/` + one `registry.register(…)` call here.
 
 ---
 

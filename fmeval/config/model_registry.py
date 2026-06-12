@@ -7,6 +7,7 @@ from typing import Callable
 from fmeval.core.models.base import ModelWrapper
 from fmeval.core.models.chatts_model import ChatTSModel
 from fmeval.core.models.mock_model import MockModel
+from fmeval.core.models.qwen_vl_model import QwenVLModel
 
 
 @dataclass
@@ -84,6 +85,19 @@ def build_default_model_registry() -> ModelRegistry:
         factory=lambda: ChatTSModel(
             checkpoint_path=os.environ.get(
                 "CHATTS_MODEL_PATH", "bytedance-research/ChatTS-8B"
+            )
+        ),
+    )
+    registry.register(
+        ModelInfo(
+            name="qwen3-vl-8b",
+            display_name="Qwen3-VL-8B-Instruct (vision)",
+            modalities=["multimodal"],
+            requires_gpu=True,
+        ),
+        factory=lambda: QwenVLModel(
+            checkpoint_path=os.environ.get(
+                "QWEN_VL_MODEL_PATH", "Qwen/Qwen3-VL-8B-Instruct"
             )
         ),
     )

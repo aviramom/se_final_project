@@ -11,9 +11,10 @@ where both LLMs and specialized multimodal models generate a natural-language an
 
 ---
 
-**Status: first real model added.** `base.py`, `mock_model.py`, and `chatts_model.py`
-are written and tested. Registry lives in `fmeval/config/model_registry.py`
-(`build_default_model_registry()`), not a separate `registry.py`.
+**Status: two real models.** `base.py`, `mock_model.py`, `chatts_model.py`, and
+`qwen_vl_model.py` are written and cluster-verified. Registry lives in
+`fmeval/config/model_registry.py` (`build_default_model_registry()`), not a separate
+`registry.py`.
 
 ---
 
@@ -22,10 +23,11 @@ are written and tested. Registry lives in `fmeval/config/model_registry.py`
 ```
 models/
   CLAUDE.md
-  __init__.py         ← ✅ exports: ModelWrapper, MockModel, ChatTSModel
+  __init__.py         ← ✅ exports: ModelWrapper, MockModel, ChatTSModel, QwenVLModel
   base.py             ← ✅ ModelWrapper ABC
   mock_model.py       ← ✅ MockModel (fixed-answer baseline for pipeline testing)
   chatts_model.py     ← ✅ ChatTSModel (bytedance-research/ChatTS-8B, input_mode="separate")
+  qwen_vl_model.py    ← ✅ QwenVLModel (Qwen/Qwen3-VL-8B-Instruct, input_mode="image")
 ```
 
 ---
@@ -57,7 +59,7 @@ class ModelWrapper(ABC):
 
     @property
     @abstractmethod
-    def input_mode(self) -> Literal["combined", "separate"]:
+    def input_mode(self) -> Literal["combined", "separate", "image"]:
         """
         How this model consumes a Sample's time series data.
 
@@ -68,7 +70,12 @@ class ModelWrapper(ABC):
         "separate"  — Sample is passed as-is; the model receives both input_text
                       (with <TS_N> tokens) and input_ts (raw arrays) and handles
                       the fusion itself.
-                      Use for models with a dedicated TS encoder.
+                      Use for models with a dedicated TS encoder (e.g. ChatTS).
+
+        "image"     — format_input renders each TS array as a matplotlib chart (PNG)
+                      and builds an interleaved content list (text ↔ images) for a
+                      vision-language model. SampleFormatter is not called.
+                      Use for VLMs like Qwen3-VL.
         """
         ...
 
@@ -111,10 +118,11 @@ Each model file must:
    `format_input` and `predict`. This lets the service construct the model locally for
    compatibility checks without a GPU or cluster path on the dev machine.
 4. Declare `input_mode` — `"combined"` for standard LLMs (TS serialized to text),
-   `"separate"` for models with a dedicated TS encoder (raw arrays passed through).
-5. In `format_input`: call `SampleFormatter.to_combined` or `to_separate` based on
-   `self.input_mode`, convert `<TS_N>` placeholders to whatever the model's processor
-   expects (e.g. `<ts><ts/>` for ChatTS), then apply the chat template.
+   `"separate"` for models with a dedicated TS encoder (raw arrays passed through),
+   `"image"` for VLMs that receive TS as rendered chart images.
+5. In `format_input`: handle the TS data according to `self.input_mode`. For `"combined"`
+   and `"separate"` call the appropriate `SampleFormatter` method; for `"image"` plot
+   each array and build an interleaved text/image content list.
 6. Implement `predict(inputs: list[Any]) -> list[str]`.
 7. **`model_name` must return a fully lowercase string.** It is passed as a CLI
    argument to `cluster_worker.py` on the cluster and looked up in the registry there —
@@ -171,10 +179,54 @@ the cluster worker.
 
 ---
 
+---
+
+## QwenVLModel (`qwen_vl_model.py`) — **implemented & cluster-verified**
+
+```python
+model = QwenVLModel(checkpoint_path="/home/aviramom/models/qwen3-vl-8b")
+model = QwenVLModel()  # falls back to HF Hub download of Qwen/Qwen3-VL-8B-Instruct
+```
+
+`input_mode = "image"` — converts each time-series array to a matplotlib PNG chart
+before calling the Qwen3-VL vision-language processor.
+
+**TS → image conversion (`_plot_ts`).** Each `np.ndarray` is plotted as a line chart
+with a dashed red mean line and an orange ±1σ shaded band. Mean and std values appear
+in the legend so the model can read them directly. Uses the `Agg` (non-interactive)
+matplotlib backend — safe on headless cluster nodes.
+
+**`format_input` details.** Splits `input_text` on `<TS_N>` tokens and builds an
+interleaved content list: text chunk → `{"type": "image", "image": <PIL.Image>}` →
+text chunk → … The result is a `{"messages": [{"role": "user", "content": [...]}]}`
+dict ready for `processor.apply_chat_template`.
+
+**`predict` details.** Processes each sample individually (variable image counts per
+prompt make batching complex). Uses `process_vision_info` from `qwen-vl-utils` to
+extract image tensors, then `AutoProcessor` + `AutoModelForImageTextToText.generate`
+with `do_sample=False`. Decodes only newly generated tokens.
+
+**Local path handling.** `_load_if_needed` checks `os.path.isabs(checkpoint_path)`:
+if True it passes `local_files_only=True` to avoid Hub repo-ID validation on absolute
+paths. If the directory doesn't exist, a `FileNotFoundError` with a download hint is
+raised before the Hub call.
+
+**Prerequisites on the cluster.** Requires `torchvision` (for `Qwen3VLVideoProcessor`)
+in addition to the standard `torch`/`transformers` stack.
+
+Checkpoint path is read from the `QWEN_VL_MODEL_PATH` env var. Download once:
+```bash
+python -c "from huggingface_hub import snapshot_download; \
+  snapshot_download('Qwen/Qwen3-VL-8B-Instruct', local_dir='/home/aviramom/models/qwen3-vl-8b')"
+```
+
+---
+
 ## Public exports (`__init__.py`)
 
 ```python
 from fmeval.core.models.base import ModelWrapper
 from fmeval.core.models.mock_model import MockModel
 from fmeval.core.models.chatts_model import ChatTSModel
+from fmeval.core.models.qwen_vl_model import QwenVLModel
 ```

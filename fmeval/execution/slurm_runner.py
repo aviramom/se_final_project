@@ -143,6 +143,19 @@ class SlurmRunner(Runner):
 
         return JobStatus.FAILED
 
+    def get_error_log(self, job: EvaluationJob) -> str | None:
+        """Fetch the tail of the Slurm stderr log for a failed job."""
+        handle: SlurmHandle | None = job.handle
+        if handle is None:
+            return None
+        try:
+            out = self._ssh(
+                f"cat {handle.remote_job_dir}/slurm_*.err 2>/dev/null | tail -40"
+            )
+            return out.strip() or None
+        except RuntimeError:
+            return None
+
     def get_result(self, job: EvaluationJob) -> RunResult:
         """SCP result.json from the cluster and parse it into a RunResult."""
         handle: SlurmHandle | None = job.handle

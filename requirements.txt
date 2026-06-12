@@ -8,9 +8,12 @@ pandas>=2.2.0           # CSV export, DataFrame manipulation
 
 # ── ML / model inference ──────────────────────────────────────────────────────
 torch>=2.2.0
-transformers>=4.41.0    # HuggingFace model wrappers
+transformers>=4.45.0    # HuggingFace model wrappers (4.45+ for AutoModelForImageTextToText)
 datasets>=2.19.0        # HuggingFace benchmark datasets (SQuAD, etc.)
 accelerate>=0.30.0      # multi-device inference helpers
+matplotlib>=3.8.0       # TS→image plotting for QwenVLModel
+qwen-vl-utils>=0.0.8   # vision-info preprocessing for Qwen VL models
+torchvision>=0.17.0    # required by Qwen3VLVideoProcessor
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 scikit-learn>=1.4.0     # F1 score; MSE/MAE also available as fallback

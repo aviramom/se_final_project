@@ -36,7 +36,7 @@ class ModelWrapper(ABC):
 
     @property
     @abstractmethod
-    def input_mode(self) -> Literal["combined", "separate"]:
+    def input_mode(self) -> Literal["combined", "separate", "image"]:
         ...
 
     @abstractmethod

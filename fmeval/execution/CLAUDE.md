@@ -69,10 +69,19 @@ class Runner(ABC):
     def get_result(self, job: EvaluationJob) -> RunResult:
         """Return the completed RunResult. Raises RuntimeError if not yet done."""
         ...
+
+    def get_error_log(self, job: EvaluationJob) -> str | None:
+        """Return a brief error log snippet for a failed job, or None.
+        Default returns None. SlurmRunner overrides to fetch the .err file tail."""
+        return None
 ```
 
 The interface passes `dataset` and `model` directly. `SlurmRunner` generates the
 sbatch script and uploads the worker internally — callers never see those details.
+
+`get_error_log` is a non-abstract optional method. `EvaluationService.poll_jobs()`
+calls it when a job transitions to FAILED and stores the result as `job.error_message`,
+which is shown in the UI. `MockRunner` inherits the default `None` return.
 
 ---
 
@@ -104,7 +113,9 @@ Submits jobs to `slurm.bgu.ac.il` over SSH. On `submit()`:
 4. SSH `sbatch job.sh` and parse the returned Slurm job ID into a `SlurmHandle`.
 
 On `get_status()`: SSH `squeue` for that job ID; map Slurm state strings → `JobStatus`.
-On `get_result()`: SSH `cat result.json` written by the worker; deserialise into `RunResult`.
+On `get_result()`: SCP `result.json` written by the worker; deserialise into `RunResult`.
+On `get_error_log()`: SSH `cat {remote_job_dir}/slurm_*.err | tail -40`; returns the
+Python traceback from a failed job so `EvaluationService` can surface it in the UI.
 
 `SlurmConfig` fields: `host`, `user`, `remote_work_dir`, `ssh_key_path`, `partition`,
 `time_limit`, `gpus_per_node`, `gpu_type`, `cpus_per_task`, `mem_gb`, `python_bin`,

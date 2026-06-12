@@ -24,11 +24,14 @@ def _build_runner() -> Runner:
         from fmeval.execution.slurm_runner import SlurmRunner
 
         env_cmds = ["module load anaconda/anaconda"]
-        # Forward CHATTS_MODEL_PATH into the sbatch script so the cluster worker
-        # loads weights from a pre-downloaded path instead of fetching from HF Hub.
+        # Forward model weight paths into the sbatch script so cluster workers
+        # load from pre-downloaded directories instead of fetching from HF Hub.
         chatts_path = os.environ.get("CHATTS_MODEL_PATH")
         if chatts_path:
             env_cmds.append(f"export CHATTS_MODEL_PATH={chatts_path}")
+        qwen_vl_path = os.environ.get("QWEN_VL_MODEL_PATH")
+        if qwen_vl_path:
+            env_cmds.append(f"export QWEN_VL_MODEL_PATH={qwen_vl_path}")
 
         cfg = SlurmConfig(
             host=os.environ.get("SLURM_HOST", "slurm.bgu.ac.il"),

@@ -103,10 +103,8 @@ class EvaluationService:
             if job.status == JobStatus.COMPLETED:
                 self._finalize_job(job)
             elif job.status == JobStatus.FAILED:
-                try:
-                    self._runner.get_result(job)
-                except RuntimeError as exc:
-                    job.error_message = str(exc)
+                log = self._runner.get_error_log(job)
+                job.error_message = log or "Job failed — no error log available."
         return list(self._jobs.values())
 
     def _finalize_job(self, job: EvaluationJob) -> None:

@@ -33,3 +33,11 @@ class Runner(ABC):
         Raises RuntimeError if the job is not yet completed or has failed.
         """
         ...
+
+    def get_error_log(self, job: EvaluationJob) -> str | None:
+        """Return a brief error log snippet for a failed job, or None if unavailable.
+
+        Default implementation returns None. Override in runners that can surface
+        stderr output (e.g. SlurmRunner fetches the .err file from the cluster).
+        """
+        return None

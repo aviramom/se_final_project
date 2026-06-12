@@ -12,15 +12,15 @@ not import from `app/`, `services/`, or `storage/`.
 
 ```
 execution/
-  __init__.py       ✅ exports EvaluationJob, JobStatus, Runner, MockRunner
+  __init__.py         ✅ exports EvaluationJob, JobStatus, Runner, MockRunner, SlurmRunner, SlurmConfig
   CLAUDE.md
-  job.py            ✅ EvaluationJob dataclass + JobStatus enum
-  runner.py         ✅ Runner ABC
-  mock_runner.py    ✅ MockRunner (ThreadPoolExecutor, local CPU)
+  job.py              ✅ EvaluationJob dataclass + JobStatus enum
+  runner.py           ✅ Runner ABC
+  mock_runner.py      ✅ MockRunner (ThreadPoolExecutor, local CPU)
+  slurm_config.py     ✅ SlurmConfig dataclass (SSH + Slurm resource parameters)
+  slurm_runner.py     ✅ SlurmRunner (submits sbatch jobs over SSH, polls squeue)
+  cluster_worker.py   ✅ Worker script uploaded to cluster per job; runs LocalEvaluationPipeline
 ```
-
-Slurm execution is deferred. When ready, add `slurm_runner.py` that implements
-`Runner` without changing any other layer.
 
 ---
 
@@ -71,8 +71,8 @@ class Runner(ABC):
         ...
 ```
 
-The interface passes `dataset` and `model` directly (no `ScriptGenerator` for the POC).
-A future `SlurmRunner` would generate the sbatch script internally.
+The interface passes `dataset` and `model` directly. `SlurmRunner` generates the
+sbatch script and uploads the worker internally — callers never see those details.
 
 ---
 
@@ -95,9 +95,46 @@ class MockRunner(Runner):
 
 ---
 
+## SlurmRunner (`slurm_runner.py`) + SlurmConfig (`slurm_config.py`)
+
+Submits jobs to `slurm.bgu.ac.il` over SSH. On `submit()`:
+1. SSH `mkdir` the job directory on the cluster (`~/fmeval_jobs/<job_id>/`).
+2. SCP `cluster_worker.py` → `worker.py` in that directory.
+3. Build and SCP an `sbatch` script (`job.sh`) with the resource spec from `SlurmConfig`.
+4. SSH `sbatch job.sh` and parse the returned Slurm job ID into a `SlurmHandle`.
+
+On `get_status()`: SSH `squeue` for that job ID; map Slurm state strings → `JobStatus`.
+On `get_result()`: SSH `cat result.json` written by the worker; deserialise into `RunResult`.
+
+`SlurmConfig` fields: `host`, `user`, `remote_work_dir`, `ssh_key_path`, `partition`,
+`time_limit`, `gpus_per_node`, `cpus_per_task`, `mem_gb`, `python_bin`, `fmeval_dir`,
+`env_setup_commands` (list of shell lines prepended to the sbatch script, e.g. `module load`).
+
+**Cluster layout** (per job):
+```
+~/fmeval_jobs/<job_id>/
+  job.sh            sbatch script
+  worker.py         cluster_worker.py uploaded from local repo
+  result.json       written by worker on success
+  slurm_<N>.out     stdout log
+  slurm_<N>.err     stderr log
+```
+
+## cluster_worker.py
+
+Standalone script that runs inside the Slurm job. Accepts `--dataset`, `--model`,
+`--max-samples`, `--output` CLI args. Imports `fmeval` from `~/fmeval_project` on the
+cluster (installed as editable via `pip install -e .`), runs `LocalEvaluationPipeline`,
+and writes `result.json`. Prints `FMEVAL_RESULT_WRITTEN:<path>` as a sentinel line that
+`SlurmRunner.get_result()` looks for before fetching the file.
+
+---
+
 ## Constraints
 
-- `MockRunner` and any future `PrecomputedRunner` must be usable with no cluster
-  credentials and no network access beyond the initial dataset download.
+- `MockRunner` must be usable with no cluster credentials and no network access beyond
+  the initial dataset download.
 - The same `ModelWrapper.predict` code path runs regardless of runner.
 - Never add Slurm-specific logic to `Runner` ABC or `EvaluationJob` — keep them generic.
+- `model_name` returned by any `ModelWrapper` must be **lowercase** — it is used as a
+  CLI argument passed to `cluster_worker.py` and looked up in the registry on the cluster.

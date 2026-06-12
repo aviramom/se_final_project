@@ -35,7 +35,7 @@ class MockModel(ModelWrapper):
 
     @property
     def model_name(self) -> str:
-        return f"mock_always_{self._answer[0]}"
+        return f"mock_always_{self._answer[0].lower()}"
 
     @property
     def supported_modalities(self) -> list[Literal["text", "time_series", "multimodal"]]:

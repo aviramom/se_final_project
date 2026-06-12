@@ -107,8 +107,15 @@ On `get_status()`: SSH `squeue` for that job ID; map Slurm state strings → `Jo
 On `get_result()`: SSH `cat result.json` written by the worker; deserialise into `RunResult`.
 
 `SlurmConfig` fields: `host`, `user`, `remote_work_dir`, `ssh_key_path`, `partition`,
-`time_limit`, `gpus_per_node`, `cpus_per_task`, `mem_gb`, `python_bin`, `fmeval_dir`,
-`env_setup_commands` (list of shell lines prepended to the sbatch script, e.g. `module load`).
+`time_limit`, `gpus_per_node`, `gpu_type`, `cpus_per_task`, `mem_gb`, `python_bin`,
+`fmeval_dir`, `env_setup_commands` (list of shell lines prepended to the sbatch script,
+e.g. `module load`).
+
+`gpu_type` (optional, e.g. `"rtx_3090"`) refines the `--gres` directive to
+`--gres=gpu:rtx_3090:N`, targeting a specific GPU family. Without it, Slurm picks any
+available GPU. **Always set this for real model runs** — the cluster has Pascal (GTX
+1080 Ti, sm_61) nodes that are incompatible with PyTorch 2.12 (min sm_75). Use
+`rtx_2080`, `rtx_3090`, `rtx_4090`, or `rtx_6000`. Set via `SLURM_GPU_TYPE` env var.
 
 **Cluster layout** (per job):
 ```

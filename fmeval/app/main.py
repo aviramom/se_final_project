@@ -38,6 +38,7 @@ def _build_runner() -> Runner:
             partition=os.environ.get("SLURM_PARTITION", "cpu"),
             time_limit=os.environ.get("SLURM_TIME_LIMIT", "01:00:00"),
             gpus_per_node=int(os.environ.get("SLURM_GPUS", "0")),
+            gpu_type=os.environ.get("SLURM_GPU_TYPE"),  # e.g. "rtx_3090"
             cpus_per_task=int(os.environ.get("SLURM_CPUS", "2")),
             mem_gb=int(os.environ.get("SLURM_MEM_GB", "16")),
             python_bin=os.environ.get(

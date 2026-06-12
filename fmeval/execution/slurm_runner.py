@@ -248,7 +248,8 @@ class SlurmRunner(Runner):
         if cfg.partition:
             lines.append(f"#SBATCH --partition={cfg.partition}")
         if cfg.gpus_per_node > 0:
-            lines.append(f"#SBATCH --gres=gpu:{cfg.gpus_per_node}")
+            gres = f"gpu:{cfg.gpu_type}:{cfg.gpus_per_node}" if cfg.gpu_type else f"gpu:{cfg.gpus_per_node}"
+            lines.append(f"#SBATCH --gres={gres}")
         for directive in cfg.extra_sbatch_directives:
             lines.append(directive)
 

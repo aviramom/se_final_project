@@ -46,6 +46,7 @@ class SlurmConfig:
     partition: str | None = None
     time_limit: str = "02:00:00"
     gpus_per_node: int = 0
+    gpu_type: str | None = None  # e.g. "rtx_3090" → --gres=gpu:rtx_3090:N
     cpus_per_task: int = 4
     mem_gb: int = 16
     python_bin: str = "python"

@@ -38,7 +38,7 @@ class ChatTSModel(ModelWrapper):
         checkpoint_path: str = "bytedance-research/ChatTS-8B",
         max_new_tokens: int = 100,
     ) -> None:
-        """Load model, tokenizer, and processor from checkpoint_path.
+        """Store configuration; weights are loaded lazily on first predict().
 
         Args:
             checkpoint_path: Local directory with model weights or a
@@ -48,6 +48,20 @@ class ChatTSModel(ModelWrapper):
             max_new_tokens: Maximum tokens to generate per sample. 100 is
                 enough for MCQ answers; increase for open-ended generation.
         """
+        self._checkpoint_path = checkpoint_path
+        self._max_new_tokens = max_new_tokens
+        # Loaded on first call to _load_if_needed() — keeps construction cheap
+        # so the service can instantiate this object locally for compatibility
+        # checks without requiring GPU or cluster paths to exist.
+        self._model = None
+        self._tokenizer = None
+        self._processor = None
+        self._device = None
+
+    def _load_if_needed(self) -> None:
+        """Load model weights, tokenizer, and processor on first inference call."""
+        if self._model is not None:
+            return
         try:
             import torch
             from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
@@ -57,10 +71,8 @@ class ChatTSModel(ModelWrapper):
                 "Install them in the cluster environment."
             ) from exc
 
-        self._max_new_tokens = max_new_tokens
-
         self._model = AutoModelForCausalLM.from_pretrained(
-            checkpoint_path,
+            self._checkpoint_path,
             trust_remote_code=True,
             device_map="auto",
             torch_dtype=torch.float16,
@@ -68,15 +80,13 @@ class ChatTSModel(ModelWrapper):
         self._model.eval()
 
         self._tokenizer = AutoTokenizer.from_pretrained(
-            checkpoint_path,
+            self._checkpoint_path,
             trust_remote_code=True,
         )
         self._processor = AutoProcessor.from_pretrained(
-            checkpoint_path,
+            self._checkpoint_path,
             trust_remote_code=True,
         )
-
-        # Resolve the actual device after device_map="auto" placement.
         self._device = next(self._model.parameters()).device
 
     # ------------------------------------------------------------------
@@ -108,9 +118,11 @@ class ChatTSModel(ModelWrapper):
         Returns a dict with "text" (formatted prompt string) and "timeseries"
         (list of raw numpy arrays), ready for batch assembly in predict().
         """
+        self._load_if_needed()
         sample = SampleFormatter.to_separate(sample)
 
-        cleaned = _TS_PLACEHOLDER_RE.sub("[time series]", sample.input_text)
+        # ChatTS processor splits on <ts><ts/> to interleave encoded arrays.
+        cleaned = _TS_PLACEHOLDER_RE.sub("<ts><ts/>", sample.input_text)
 
         messages = [{"role": "user", "content": cleaned}]
         prompt = self._tokenizer.apply_chat_template(
@@ -133,14 +145,17 @@ class ChatTSModel(ModelWrapper):
             Letter extraction for MCQ scoring is handled downstream by
             MCQMetrics.extract_letter().
         """
+        self._load_if_needed()
         import torch
 
         texts = [inp["text"] for inp in inputs]
-        timeseries_list = [inp["timeseries"] for inp in inputs]
+        # Processor expects a flat list across all samples; it uses <ts><ts/>
+        # placeholder counts per prompt to know how many arrays belong to each sample.
+        timeseries_flat = [ts for inp in inputs for ts in inp["timeseries"]]
 
         proc = self._processor(
             text=texts,
-            timeseries=timeseries_list,
+            timeseries=timeseries_flat,
             padding=True,
             return_tensors="pt",
         ).to(self._device)

@@ -81,6 +81,7 @@ def chatts():
 
     with patch.dict("sys.modules", {"torch": torch_mock, "transformers": tf_mock}):
         instance = ChatTSModel(checkpoint_path="/fake/path")
+        instance._load_if_needed()  # trigger lazy load while mocks are active
 
         # Wire processor and model generate for predict() tests.
         def proc_side_effect(text=None, timeseries=None, **kw):
@@ -180,12 +181,12 @@ def test_format_input_strips_both_ts_placeholders(chatts):
 
 def test_format_input_replaces_placeholder_with_marker(chatts):
     result = chatts.format_input(_single_ts_sample())
-    assert "[time series]" in result["text"]
+    assert "<ts><ts/>" in result["text"]
 
 
 def test_format_input_replaces_both_placeholders(chatts):
     result = chatts.format_input(_two_ts_sample())
-    assert result["text"].count("[time series]") == 2
+    assert result["text"].count("<ts><ts/>") == 2
 
 
 def test_format_input_preserves_question_text(chatts):

@@ -106,12 +106,15 @@ Each model file must:
 
 1. Subclass `ModelWrapper`.
 2. Accept `checkpoint_path: str` in `__init__` (local dir or HuggingFace repo id).
-3. **Lazy-import** `torch` and `transformers` inside `__init__`, not at module level —
-   this keeps the module importable on dev machines without GPU/heavy deps.
+3. **Lazy weight loading** — `__init__` stores config only; implement `_load_if_needed()`
+   that imports `torch`/`transformers` and loads weights, and call it at the top of both
+   `format_input` and `predict`. This lets the service construct the model locally for
+   compatibility checks without a GPU or cluster path on the dev machine.
 4. Declare `input_mode` — `"combined"` for standard LLMs (TS serialized to text),
    `"separate"` for models with a dedicated TS encoder (raw arrays passed through).
 5. In `format_input`: call `SampleFormatter.to_combined` or `to_separate` based on
-   `self.input_mode`, strip `<TS_N>` placeholders if needed, apply chat template.
+   `self.input_mode`, convert `<TS_N>` placeholders to whatever the model's processor
+   expects (e.g. `<ts><ts/>` for ChatTS), then apply the chat template.
 6. Implement `predict(inputs: list[Any]) -> list[str]`.
 7. **`model_name` must return a fully lowercase string.** It is passed as a CLI
    argument to `cluster_worker.py` on the cluster and looked up in the registry there —
@@ -131,7 +134,7 @@ Used to verify the full pipeline end-to-end without loading any real weights.
 
 ---
 
-## ChatTSModel (`chatts_model.py`) — **implemented**
+## ChatTSModel (`chatts_model.py`) — **implemented & cluster-verified**
 
 ```python
 model = ChatTSModel(checkpoint_path="/home/aviramom/models/chatts-8b")
@@ -139,18 +142,32 @@ model = ChatTSModel()  # falls back to HF Hub download
 ```
 
 `input_mode = "separate"` — passes raw numpy arrays directly to `AutoProcessor`.
-`format_input` strips `<TS_N>` placeholders (replaced with `[time series]`), then
-applies the Qwen chat template. `predict` calls the processor for batched encoding,
-runs `model.generate(do_sample=False)`, and slices new tokens from the left-padded
+
+**Lazy weight loading.** `__init__` only stores `checkpoint_path`; weights, tokenizer,
+and processor are loaded on the first call to `_load_if_needed()`, which is invoked at
+the top of both `format_input` and `predict`. This keeps construction cheap so
+`EvaluationService` can instantiate the model locally for compatibility checks without
+touching the GPU or requiring cluster paths to exist on the dev machine.
+
+**`format_input` details.** Replaces `<TS_N>` placeholders with `<ts><ts/>` — the
+ChatTS processor's native token — then applies the Qwen chat template. Do **not** use
+plain text like `[time series]`; the processor splits on `<ts><ts/>` to interleave
+encoded arrays and will raise `ValueError` if the count mismatches.
+
+**`predict` details.** Flattens the per-sample `timeseries` lists into one flat list
+before passing to the processor (`[ts for inp in inputs for ts in inp["timeseries"]]`).
+The processor uses the per-prompt `<ts><ts/>` count to slice the flat list correctly.
+Runs `model.generate(do_sample=False)` and slices new tokens from the left-padded
 output (Qwen uses left-padding for batched generation).
 
 Checkpoint path is read from the `CHATTS_MODEL_PATH` env var at registry factory
 time; set it in the Slurm launch command to point to a pre-downloaded path on the
-cluster. Without the env var, the constructor downloads from HuggingFace Hub (~16 GB).
+cluster (`/home/aviramom/models/chatts-8b`). Without the env var the constructor
+downloads from HuggingFace Hub (~16 GB).
 
-**Local testing:** use `MockModel` (`FMEVAL_RUNNER=mock`). `ChatTSModel.__init__`
-lazy-imports `torch`/`transformers`, so the module imports safely on any machine, but
-constructing the object requires GPU memory and the heavy deps.
+**Local testing:** use `MockModel` (`FMEVAL_RUNNER=mock`). The module imports safely on
+any machine; only the first `predict()` call loads weights, which only happens inside
+the cluster worker.
 
 ---
 

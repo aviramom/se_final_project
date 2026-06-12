@@ -101,7 +101,7 @@ fmeval/
     models/
       base.py                       # ✅ ModelWrapper ABC
       mock_model.py                 # ✅ MockModel (fixed-answer baseline)
-      chatts_model.py               # ✅ ChatTSModel (bytedance-research/ChatTS-8B, separate mode)
+      chatts_model.py               # ✅ ChatTSModel (bytedance-research/ChatTS-8B, separate mode, lazy loading, cluster-verified)
       __init__.py                   # ✅
     metrics/
       base.py                       # ✅ Metric ABC
@@ -115,7 +115,7 @@ fmeval/
     job.py                          # ✅ EvaluationJob, JobStatus
     runner.py                       # ✅ Runner ABC
     mock_runner.py                  # ✅ MockRunner (ThreadPoolExecutor, local CPU)
-    slurm_config.py                 # ✅ SlurmConfig dataclass (SSH + resource params)
+    slurm_config.py                 # ✅ SlurmConfig dataclass (SSH + resource params, incl. gpu_type)
     slurm_runner.py                 # ✅ SlurmRunner (sbatch over SSH, polls squeue)
     cluster_worker.py               # ✅ Worker uploaded per job; runs LocalEvaluationPipeline
     __init__.py                     # ✅
@@ -196,8 +196,16 @@ Real runs can take hours and depend on cluster availability, so the system **sup
 # run the app (local mock mode):
 #   .venv/bin/streamlit run fmeval/app/main.py
 
-# run the app (Slurm cluster mode):
-#   FMEVAL_RUNNER=slurm .venv/bin/streamlit run fmeval/app/main.py
+# run the app (Slurm cluster mode — GPU jobs with ChatTS-8B):
+#   FMEVAL_RUNNER=slurm \
+#   SLURM_PARTITION=main \
+#   SLURM_GPUS=1 \
+#   SLURM_GPU_TYPE=rtx_3090 \       ← required: avoids sm_61 nodes (GTX 1080 Ti) incompatible with PyTorch 2.12
+#   SLURM_CPUS=4 \
+#   SLURM_MEM_GB=24 \
+#   SLURM_TIME_LIMIT=02:00:00 \
+#   CHATTS_MODEL_PATH=/home/aviramom/models/chatts-8b \
+#   .venv/bin/streamlit run fmeval/app/main.py
 
 # sync code changes to the cluster:
 #   rsync -av --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \

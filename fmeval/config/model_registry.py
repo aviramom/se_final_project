@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Callable
 
 from fmeval.core.models.base import ModelWrapper
+from fmeval.core.models.chatts_model import ChatTSModel
 from fmeval.core.models.mock_model import MockModel
 
 
@@ -63,5 +65,17 @@ def build_default_model_registry() -> ModelRegistry:
             modalities=["text", "time_series", "multimodal"],
         ),
         factory=lambda: MockModel("C"),
+    )
+    registry.register(
+        ModelInfo(
+            name="chatts-8b",
+            display_name="ChatTS-8B (ByteDance Research)",
+            modalities=["multimodal"],
+        ),
+        factory=lambda: ChatTSModel(
+            checkpoint_path=os.environ.get(
+                "CHATTS_MODEL_PATH", "bytedance-research/ChatTS-8B"
+            )
+        ),
     )
     return registry

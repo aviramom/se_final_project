@@ -69,7 +69,7 @@ These three ABCs and one dataclass are the heart of the system. Get their interf
 
 ### Layer 4 — Execution
 
-`ScriptGenerator` builds the `sbatch` script (env vars, paths, run command). `Runner` (ABC) provides `submit(job) -> handle` and `get_status(handle)` — the most important POC seam. Three implementations: `SlurmRunner` (shells out to `sbatch`/`squeue`), `MockRunner` (runs a truncated dummy eval locally), `PrecomputedRunner` (returns a handle pointing at a canned log). Swap the runner; nothing else changes. `ResultParser` reads raw output logs into predictions + targets ready for a `Metric`. `JobStatus` (enum): `queued / running / completed / failed`. `EvaluationJob` (dataclass) carries job state across the async boundary.
+`Runner` (ABC) provides `submit(job, dataset, model) -> handle`, `get_status(job)`, and `get_result(job)` — the most important POC seam. Two implementations are active: `MockRunner` (runs `LocalEvaluationPipeline` in a local thread) and `SlurmRunner` (uploads a worker script + sbatch job over SSH, polls `squeue`, fetches `result.json` on completion). Swap the runner via the `FMEVAL_RUNNER` env var; nothing else changes. `SlurmConfig` holds all SSH and resource parameters. `cluster_worker.py` is the script uploaded per job. `JobStatus` (enum): `queued / running / completed / failed`. `EvaluationJob` (dataclass) carries job state across the async boundary.
 
 ### Layer 5 — Data & Configuration
 
@@ -77,7 +77,7 @@ These three ABCs and one dataclass are the heart of the system. Get their interf
 
 ### Key interactions
 
-**Run flow (write path).** `ConfigPage → EvaluationService.run_evaluation(config)`. The service resolves names through the registries into a `Dataset` and a `ModelWrapper`, checks modality compatibility, submits to `MockRunner` (which runs `LocalEvaluationPipeline` in a background thread), and returns a `job_id` immediately — the UI never blocks. Later, `poll_jobs()` asks the runner for status; on completion it saves an `EvaluationResult` to `ResultsRepository`.
+**Run flow (write path).** `ConfigPage → EvaluationService.run_evaluation(config)`. The service resolves names through the registries into a `Dataset` and a `ModelWrapper`, checks modality compatibility, submits to the active runner (`MockRunner` or `SlurmRunner`, chosen by `FMEVAL_RUNNER` env var), and returns a `job_id` immediately — the UI never blocks. Later, `poll_jobs()` asks the runner for status; on completion it saves an `EvaluationResult` to `ResultsRepository`.
 
 **Dashboard (read path).** `DashboardPage → get_dashboard_data() → ResultsRepository.query → charts`. The read and write paths are fully independent, which is what satisfies the "configuration phase vs. asynchronous results-viewing phase" requirement.
 
@@ -101,6 +101,7 @@ fmeval/
     models/
       base.py                       # ✅ ModelWrapper ABC
       mock_model.py                 # ✅ MockModel (fixed-answer baseline)
+      chatts_model.py               # ✅ ChatTSModel (bytedance-research/ChatTS-8B, separate mode)
       __init__.py                   # ✅
     metrics/
       base.py                       # ✅ Metric ABC
@@ -114,13 +115,16 @@ fmeval/
     job.py                          # ✅ EvaluationJob, JobStatus
     runner.py                       # ✅ Runner ABC
     mock_runner.py                  # ✅ MockRunner (ThreadPoolExecutor, local CPU)
+    slurm_config.py                 # ✅ SlurmConfig dataclass (SSH + resource params)
+    slurm_runner.py                 # ✅ SlurmRunner (sbatch over SSH, polls squeue)
+    cluster_worker.py               # ✅ Worker uploaded per job; runs LocalEvaluationPipeline
     __init__.py                     # ✅
   storage/                          # ✅ SQLite persistence
     models.py                       # ✅ EvaluationResult dataclass
     repository.py                   # ✅ ResultsRepository
     __init__.py                     # ✅
   config/                           # ✅ Registries
-    model_registry.py               # ✅ ModelInfo, ModelRegistry, build_default_model_registry()
+    model_registry.py               # ✅ ModelInfo, ModelRegistry, build_default_model_registry() — registers mock_always_{a,b,c} + chatts-8b
     benchmark_registry.py           # ✅ BenchmarkInfo, BenchmarkRegistry, build_default_benchmark_registry()
     __init__.py                     # ✅
   services/
@@ -140,15 +144,19 @@ tests/
     test_tsexam1.py                 # ✅
     test_mcq_metrics.py             # ✅
     test_mock_model.py              # ✅
+    test_chatts_model.py            # ✅ ChatTSModel: format_input + predict (mocked, no GPU)
   evaluation/
     test_pipeline.py                # ✅ LocalEvaluationPipeline + RunResult (30 tests)
   storage/
     test_repository.py              # ✅ ResultsRepository: save/query/list_exp_ids/migration
   services/
     test_evaluation_service.py      # ✅ query_results, group_results, exp_id auto-slug
+  execution/
+    test_slurm_runner.py            # ✅ SlurmRunner integration tests
 pyproject.toml    # package install config (pip install -e .)
 ARD_Project.pdf   # ground-truth requirements — consult when unsure
 CLAUDE.md
+README.md         # setup + launch commands (local and Slurm)
 ```
 
 ---
@@ -164,9 +172,7 @@ CLAUDE.md
 - **Stored per run:** model name, benchmark name, modality, timestamp, execution time, computed metrics, `exp_id` (experiment label), `max_samples`.
 
 ### POC / demo constraint (important)
-Real runs can take hours and depend on cluster availability, so the system **must support an offline/simulated mode**: either a drastically reduced "dummy" dataset run locally, OR parsing pre-computed logs to visualize instantly. Build the execution layer behind an interface with a **MockRunner** and a **SlurmRunner**, switchable by config, so the demo never depends on a live queue.
-
-The first thing to build is the **vertical slice** from the ARD's POC plan: one dropdown model + one multimodal benchmark → "Run" generates a script → mock/dummy execution → parse → compute ExactMatch / F1 → show in a table/chart.
+Real runs can take hours and depend on cluster availability, so the system **supports an offline/simulated mode** via `MockRunner` (local thread) and a **live cluster mode** via `SlurmRunner` — switchable with `FMEVAL_RUNNER=mock|slurm`. The demo never depends on a live queue; set `FMEVAL_RUNNER=mock` (the default) to run everything locally.
 
 ---
 
@@ -183,10 +189,22 @@ The first thing to build is the **vertical slice** from the ARD's POC plan: one 
 ## 6. Commands
 
 ```bash
-# environment: .venv at repo root (Python 3.14, managed with uv)
+# environment: .venv at repo root (Python 3.11, managed with uv)
 # install deps:   uv pip install -r requirements.txt --python .venv/bin/python
 # install pkg:    uv pip install -e . --python .venv/bin/python   ← required once for imports to work
-# run the app:    .venv/bin/streamlit run fmeval/app/main.py
+
+# run the app (local mock mode):
+#   .venv/bin/streamlit run fmeval/app/main.py
+
+# run the app (Slurm cluster mode):
+#   FMEVAL_RUNNER=slurm .venv/bin/streamlit run fmeval/app/main.py
+
+# sync code changes to the cluster:
+#   rsync -av --exclude='.venv' --exclude='__pycache__' --exclude='*.pyc' \
+#     --exclude='.git' --exclude='data/' --exclude='fmeval.egg-info' \
+#     /Users/omeraviram/Projects/final_project/ \
+#     aviramom@slurm.bgu.ac.il:~/fmeval_project/
+
 # run tests:      .venv/bin/pytest
 # lint/format:    .venv/bin/ruff check . && .venv/bin/ruff format .
 # type check:     .venv/bin/mypy fmeval

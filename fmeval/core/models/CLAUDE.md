@@ -11,9 +11,9 @@ where both LLMs and specialized multimodal models generate a natural-language an
 
 ---
 
-**Status: partially implemented.** `base.py` and `mock_model.py` are written and
-tested (`tests/core/test_mock_model.py`). `registry.py` and real model wrappers are
-not yet implemented.
+**Status: first real model added.** `base.py`, `mock_model.py`, and `chatts_model.py`
+are written and tested. Registry lives in `fmeval/config/model_registry.py`
+(`build_default_model_registry()`), not a separate `registry.py`.
 
 ---
 
@@ -22,11 +22,10 @@ not yet implemented.
 ```
 models/
   CLAUDE.md
-  __init__.py      ← ✅ exports: ModelWrapper, MockModel
-  base.py          ← ✅ ModelWrapper ABC
-  mock_model.py    ← ✅ MockModel (always answers a fixed letter — for pipeline testing)
-  registry.py      ← MODEL_REGISTRY dict + get_model() factory  (not yet written)
-  <model>.py       ← one file per model family  (not yet written)
+  __init__.py         ← ✅ exports: ModelWrapper, MockModel, ChatTSModel
+  base.py             ← ✅ ModelWrapper ABC
+  mock_model.py       ← ✅ MockModel (fixed-answer baseline for pipeline testing)
+  chatts_model.py     ← ✅ ChatTSModel (bytedance-research/ChatTS-8B, input_mode="separate")
 ```
 
 ---
@@ -94,19 +93,10 @@ class ModelWrapper(ABC):
 
 ---
 
-## Registry (`registry.py`)
+## Registry
 
-```python
-MODEL_REGISTRY: dict[str, type[ModelWrapper]] = {}
-
-def get_model(name: str, **kwargs) -> ModelWrapper:
-    if name not in MODEL_REGISTRY:
-        raise KeyError(f"Unknown model '{name}'. Available: {list(MODEL_REGISTRY)}")
-    return MODEL_REGISTRY[name](**kwargs)
-```
-
-The registry is the **only** place that maps string names to classes. `EvaluationService`
-calls `get_model(name)` — it never imports concrete wrapper classes directly.
+Registration lives in `fmeval/config/model_registry.py` → `build_default_model_registry()`.
+Adding a model = one new file here + one `registry.register(...)` call there.
 
 ---
 
@@ -115,15 +105,17 @@ calls `get_model(name)` — it never imports concrete wrapper classes directly.
 Each model file must:
 
 1. Subclass `ModelWrapper`.
-2. Accept `model_id: str` in `__init__` (the HuggingFace repo id). This lets the
-   caller choose a variant without touching code.
-3. Declare `input_mode` — `"combined"` for LLMs, `"separate"` for models with a TS
-   encoder.
-4. In `format_input`: call `SampleFormatter.to_combined(sample)` or
-   `SampleFormatter.to_separate(sample)` based on `self.input_mode`, then apply any
-   model-specific prompt template.
-5. Implement `predict` to return `list[str]`.
-6. Register itself: `MODEL_REGISTRY["my_model"] = MyModelWrapper` at module level.
+2. Accept `checkpoint_path: str` in `__init__` (local dir or HuggingFace repo id).
+3. **Lazy-import** `torch` and `transformers` inside `__init__`, not at module level —
+   this keeps the module importable on dev machines without GPU/heavy deps.
+4. Declare `input_mode` — `"combined"` for standard LLMs (TS serialized to text),
+   `"separate"` for models with a dedicated TS encoder (raw arrays passed through).
+5. In `format_input`: call `SampleFormatter.to_combined` or `to_separate` based on
+   `self.input_mode`, strip `<TS_N>` placeholders if needed, apply chat template.
+6. Implement `predict(inputs: list[Any]) -> list[str]`.
+7. **`model_name` must return a fully lowercase string.** It is passed as a CLI
+   argument to `cluster_worker.py` on the cluster and looked up in the registry there —
+   a case mismatch causes a `KeyError` at runtime.
 
 ---
 
@@ -139,14 +131,33 @@ Used to verify the full pipeline end-to-end without loading any real weights.
 
 ---
 
+## ChatTSModel (`chatts_model.py`) — **implemented**
+
+```python
+model = ChatTSModel(checkpoint_path="/home/aviramom/models/chatts-8b")
+model = ChatTSModel()  # falls back to HF Hub download
+```
+
+`input_mode = "separate"` — passes raw numpy arrays directly to `AutoProcessor`.
+`format_input` strips `<TS_N>` placeholders (replaced with `[time series]`), then
+applies the Qwen chat template. `predict` calls the processor for batched encoding,
+runs `model.generate(do_sample=False)`, and slices new tokens from the left-padded
+output (Qwen uses left-padding for batched generation).
+
+Checkpoint path is read from the `CHATTS_MODEL_PATH` env var at registry factory
+time; set it in the Slurm launch command to point to a pre-downloaded path on the
+cluster. Without the env var, the constructor downloads from HuggingFace Hub (~16 GB).
+
+**Local testing:** use `MockModel` (`FMEVAL_RUNNER=mock`). `ChatTSModel.__init__`
+lazy-imports `torch`/`transformers`, so the module imports safely on any machine, but
+constructing the object requires GPU memory and the heavy deps.
+
+---
+
 ## Public exports (`__init__.py`)
 
 ```python
 from fmeval.core.models.base import ModelWrapper
 from fmeval.core.models.mock_model import MockModel
-```
-
-When `registry.py` is implemented, add:
-```python
-from fmeval.core.models.registry import get_model, MODEL_REGISTRY
+from fmeval.core.models.chatts_model import ChatTSModel
 ```

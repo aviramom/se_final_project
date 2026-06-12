@@ -24,7 +24,47 @@ app/
 ## Launch
 
 ```bash
-streamlit run fmeval/app/main.py
+# Local mode (MockRunner — no cluster needed, default)
+.venv/bin/streamlit run fmeval/app/main.py
+
+# Slurm mode (SlurmRunner — submits real jobs to slurm.bgu.ac.il)
+FMEVAL_RUNNER=slurm .venv/bin/streamlit run fmeval/app/main.py
+
+# Slurm mode with non-default resources
+FMEVAL_RUNNER=slurm SLURM_PARTITION=rtx3090 SLURM_GPUS=1 \
+  .venv/bin/streamlit run fmeval/app/main.py
+```
+
+## Runner selection (`main.py` — `_build_runner()`)
+
+The runner is chosen at startup from the `FMEVAL_RUNNER` env var (default `"mock"`).
+`"slurm"` instantiates `SlurmRunner` with `SlurmConfig` built from env vars:
+
+| Env var | Default |
+|---|---|
+| `FMEVAL_RUNNER` | `mock` |
+| `SLURM_HOST` | `slurm.bgu.ac.il` |
+| `SLURM_USER` | `aviramom` |
+| `SLURM_WORK_DIR` | `/home/aviramom/fmeval_jobs` |
+| `SLURM_SSH_KEY` | `~/.ssh/id_ed25519` |
+| `SLURM_PARTITION` | `cpu` |
+| `SLURM_TIME_LIMIT` | `01:00:00` |
+| `SLURM_GPUS` | `0` |
+| `SLURM_CPUS` | `2` |
+| `SLURM_MEM_GB` | `16` |
+| `SLURM_PYTHON_BIN` | `/home/aviramom/fmeval_project/.venv/bin/python` |
+| `SLURM_FMEVAL_DIR` | `/home/aviramom/fmeval_project` |
+| `CHATTS_MODEL_PATH` | *(unset — falls back to HF Hub download)* |
+
+`CHATTS_MODEL_PATH` is forwarded into the sbatch `env_setup_commands` automatically
+by `_build_runner()`. Set it locally to a pre-downloaded path on the cluster so the
+worker skips the 16 GB download on every job:
+
+```bash
+FMEVAL_RUNNER=slurm SLURM_PARTITION=<gpu-partition> SLURM_GPUS=1 \
+SLURM_MEM_GB=32 SLURM_TIME_LIMIT=04:00:00 \
+CHATTS_MODEL_PATH=/home/aviramom/models/chatts-8b \
+.venv/bin/streamlit run fmeval/app/main.py
 ```
 
 ## Service singleton (`main.py`)
@@ -37,7 +77,7 @@ def get_service() -> EvaluationService:
     return EvaluationService(
         model_registry=build_default_model_registry(),
         benchmark_registry=build_default_benchmark_registry(),
-        runner=MockRunner(),
+        runner=_build_runner(),   # MockRunner or SlurmRunner per FMEVAL_RUNNER
         repository=ResultsRepository(db_path),
     )
 ```

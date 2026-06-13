@@ -42,3 +42,20 @@ class Metric(ABC):
         extraction for MCQ).
         """
         ...
+
+    @abstractmethod
+    def label_predictions(
+        self,
+        predictions: list[str],
+        targets: list[str],
+    ) -> tuple[list[str | None], list[str | None]]:
+        """Extract the canonical answer token from each prediction and target.
+
+        Returns (predicted_labels, true_labels), aligned per sample.  This is
+        the per-sample counterpart to compute(): the pipeline uses it to record
+        each sample's predicted/correct answer and whether it matched, without
+        the pipeline needing to know how a given metric parses an answer (MCQ
+        letters, class labels, etc.).  A None entry means the string could not
+        be parsed into a valid answer.
+        """
+        ...

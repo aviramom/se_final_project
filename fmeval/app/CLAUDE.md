@@ -14,10 +14,13 @@ import from `core`, `execution`, `storage`, or `config` directly.
 app/
   __init__.py         ✅ empty package marker
   CLAUDE.md
-  main.py             ✅ entry point + @st.cache_resource service singleton
+  main.py             ✅ entry point + @st.cache_resource service singleton + inject_css()
   config_page.py      ✅ render_config_page(service)
-  dashboard_page.py   ✅ render_dashboard_page(service)
+  dashboard_page.py   ✅ render_dashboard_page(service) — Runs/Compare/Trends/Jobs sub-tabs
+  ui_components.py    ✅ shared CSS, status_badge(), render_qa_card(), render_diff_card()
 ```
+
+The Streamlit theme lives in `.streamlit/config.toml` at the repo root.
 
 ---
 
@@ -90,8 +93,16 @@ within a session. Results in SQLite persist across server restarts.
 ## ConfigPage (`config_page.py`) — `render_config_page(service)`
 
 - **Model dropdown** populated from `service.list_models()` (display_name → name map)
-- **Benchmark dropdown** populated from `service.list_benchmarks()`
+- **Two-step benchmark picker** — benchmarks are grouped by `BenchmarkInfo.group`
+  ("Benchmark group" selectbox), then a second "Dataset" selectbox lists the
+  `short_name`s within that group (hidden when a group has a single benchmark).
+  This keeps the 95 UCR datasets out of one giant flat dropdown.
 - **Max samples slider** (10–200, default 50)
+- **Few-shot controls** (k / support selection / random seed) — shown only when the
+  selected benchmark has `supports_few_shot=True` (UCR ICL). Flow into
+  `EvaluationConfig.num_shots/picking_strategy/random_seed`; other benchmarks use
+  defaults. The service forwards them as `dataset_params` to the dataset factory
+  (and `SlurmRunner` passes them as worker CLI flags so cluster runs match the UI).
 - **Experiment ID text input** — free-text label (max 64 chars); blank → service
   generates an auto-slug `"run-YYYYMMDD-HHMMSS"`. Resolved exp_id shown in success toast.
 - **"Run Evaluation" button** → `service.run_evaluation(config)` in try/except;
@@ -103,32 +114,33 @@ within a session. Results in SQLite persist across server restarts.
 
 ## DashboardPage (`dashboard_page.py`) — `render_dashboard_page(service)`
 
-- **Refresh button** → `service.poll_jobs()` + `st.rerun()`
-- **Export CSV button** → `st.download_button(data=service.export_csv())`
-- **Jobs table** — all jobs tracked this session (includes `Exp ID` column)
-- **Filter panel** (`st.expander`) — multiselect for Experiment IDs, Models, Benchmarks;
-  optional date-range inputs; "Clear Filters" button. Uses `st.session_state` keys so
-  selections survive rerenders. Empty selection = no restriction on that dimension.
-- **View toggle** — `"Individual runs"` or `"Grouped by Exp ID"`
-  - *Individual*: grouped bar chart (x=Model, y=Accuracy, color=Benchmark, hover shows
-    exp_id); results table with `on_select="rerun"` (Streamlit 1.35+) — clicking a row
-    navigates to the **Run Detail** view
-  - *Grouped*: bar chart with error bars (mean ± std on Accuracy); grouped comparison
-    table showing `"0.8200 ± 0.0300"` strings for headline metrics with best-row
-    highlight; n_samples and n_unparseable are summed across runs in each group
-- **Run Detail view** — replaces the chart + table when a row is selected:
-  - Header with job metadata (model, benchmark, exp_id, samples, timestamp, exec time)
-  - Four metric cards: Accuracy, Balanced Acc, F1 Macro, F1 Weighted
-  - Filter radio: All / Correct only / Incorrect only
-  - Per-sample table: `#`, Question (truncated), Correct letter, Predicted letter,
-    Result (✓/✗ with color), dynamic metadata columns (difficulty, category, etc.)
-  - Expandable section with full question text and raw model output per sample
-  - "← Back" button returns to the comparison table
-  - If no sample data is stored (run predates this feature), shows a notice instead
+Four sub-tabs (`st.tabs`):
+
+- **📊 Runs** — filter panel (exp_ids / models / benchmarks / date range);
+  **chart-metric selectbox** fed by `service.list_metric_keys()` (y-range pinned
+  to [0,1] only when all values look like rates); Individual / Grouped toggle;
+  Export CSV. Results table uses `selection_mode="multi-row"`: one selected row
+  → "View details" + "Delete (1)", several → bulk "Delete (N)". Deletes go
+  through an `@st.dialog` confirmation; after deletion the table widget key is
+  rotated via `results_table_nonce` (selections are index-based and would
+  otherwise point at the wrong rows).
+- **Run Detail** (drill-in from Runs) — metadata line + notes banner; **Edit
+  expander** (exp_id text_input + notes text_area → `service.update_run`);
+  Delete-run button; metric cards; **Breakdown by Category** (metadata-key
+  selectbox → `get_category_breakdown` bar chart + table); per-sample table;
+  Q/A card viewer (`render_qa_card`, paginated 25/page).
+- **⚖️ Compare** — two run selectboxes (B limited to A's benchmark);
+  `service.compare_runs` → 4 agreement metric cards, color-coded per-question
+  table, "Disagreements only" toggle with side-by-side `render_diff_card`s.
+- **📈 Trends** — metric + benchmark selectboxes; `px.line` of metric vs
+  timestamp (color=model, line_dash=benchmark).
+- **⚙️ Jobs** — persisted jobs from `service.poll_jobs()` (restored across
+  restarts), status-count metric row, table with colored status cells.
 
 Session state keys managed by the dashboard:
 `dash_filter_exp_ids`, `dash_filter_models`, `dash_filter_benchmarks`,
-`dash_date_from`, `dash_date_to`, `dash_view_mode`, `selected_job_id`
+`dash_date_from`, `dash_date_to`, `dash_view_mode`, `selected_job_id`,
+`results_table_nonce`
 
 ---
 

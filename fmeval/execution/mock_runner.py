@@ -5,7 +5,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any
 
 from fmeval.core.datasets.base import Dataset
-from fmeval.core.metrics.mcq_metrics import MCQMetrics
 from fmeval.core.models.base import ModelWrapper
 from fmeval.evaluation.pipeline import LocalEvaluationPipeline
 from fmeval.evaluation.result import RunResult
@@ -20,6 +19,8 @@ class MockRunner(Runner):
     is a future concern; swap this runner in EvaluationService when ready.
     """
 
+    runner_type = "mock"
+
     def __init__(self, max_workers: int = 2) -> None:
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="mock_runner"
@@ -29,7 +30,9 @@ class MockRunner(Runner):
 
     def submit(self, job: EvaluationJob, dataset: Dataset, model: ModelWrapper) -> Any:
         """Schedule pipeline.run(dataset) in the thread pool; return the Future."""
-        pipeline = LocalEvaluationPipeline(model=model, metric=MCQMetrics(), verbose=False)
+        # The dataset declares its own evaluation method (MCQ letters, class
+        # labels, etc.) — the runner stays agnostic to the answer format.
+        pipeline = LocalEvaluationPipeline(model=model, metric=dataset.metric, verbose=False)
         future: Future[RunResult] = self._executor.submit(pipeline.run, dataset)
         with self._lock:
             self._futures[job.job_id] = future

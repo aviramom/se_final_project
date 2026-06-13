@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Iterator, Literal
 
+from fmeval.core.metrics.base import Metric
+from fmeval.core.metrics.mcq_metrics import MCQMetrics
 from fmeval.core.sample import Sample
 
 
@@ -25,6 +27,17 @@ class Dataset(ABC):
         Metric selection.  Current research targets 'multimodal' exclusively;
         the broader type keeps future pure-text or pure-TS datasets possible."""
         ...
+
+    @property
+    def metric(self) -> Metric:
+        """Evaluation method for this benchmark.
+
+        Defaults to MCQMetrics — the answer format shared by the multiple-choice
+        benchmarks.  A subclass whose answer format differs (e.g. free class
+        labels in UCR ICL) overrides this to return the right Metric.  The
+        runners read it so the pipeline is never tied to one metric.
+        """
+        return MCQMetrics()
 
     @property
     @abstractmethod

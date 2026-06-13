@@ -43,13 +43,13 @@ Strict layered design (lightweight ports-and-adapters). Five layers; dependencie
 
 ### Layer 1 — Presentation
 
-Two pages, both in Streamlit/Gradio. `ConfigPage` populates dropdowns from the registries, collects evaluation parameters, and on "Run" calls one method on `EvaluationService`. `DashboardPage` shows job statuses, renders comparison charts/tables, and triggers CSV export.
+Two pages, both in Streamlit/Gradio. `ConfigPage` populates dropdowns from the registries, collects evaluation parameters, and on "Run" calls one method on `EvaluationService`. `DashboardPage` is split into four sub-tabs: **Runs** (filterable results, any-metric bar chart, drill-in run detail with edit/delete and category breakdown), **Compare** (run-vs-run per-question agreement + side-by-side answers), **Trends** (metric over time), **Jobs** (persisted job statuses with badges). Shared styling/cards live in `ui_components.py`; the theme is in `.streamlit/config.toml`.
 
 Hard rule: no business logic in the UI. It never reads a raw benchmark file or computes a metric — it only calls `EvaluationService` and renders the result.
 
 ### Layer 2 — Orchestration
 
-`EvaluationService` is the single class the UI talks to. It owns the workflow and does none of the actual work. Public surface: `list_models()`, `list_benchmarks()` (delegates to registries), `run_evaluation(config) -> job_id`, `poll_jobs()`, `get_dashboard_data()`, `list_exp_ids()`, `query_results(filters)`, `group_results(results)`, `export_csv()`. Everything below is invoked by the service; nothing below ever calls back up.
+`EvaluationService` is the single class the UI talks to. It owns the workflow and does none of the actual work. Public surface: `list_models()`, `list_benchmarks()` (delegates to registries), `run_evaluation(config) -> job_id`, `poll_jobs()`, `get_dashboard_data()`, `list_exp_ids()`, `query_results(filters)`, `group_results(results)`, `export_csv()`, plus run management (`update_run` — exp_id/notes, `delete_run`/`delete_runs`) and analytics (`compare_runs`, `get_category_breakdown(s)`, `list_metadata_keys`, `list_metric_keys`). Jobs are persisted to the DB and restored on startup (`_restore_jobs`): running Slurm jobs reattach via serialized handles; orphaned mock jobs are marked failed. Everything below is invoked by the service; nothing below ever calls back up.
 
 ### Layer 3 — Domain (core abstractions)
 
@@ -63,9 +63,11 @@ These three ABCs and one dataclass are the heart of the system. Get their interf
 
 `ModelWrapper` (ABC) declares `supported_modalities`, `input_mode` (`"combined"` or `"separate"`), `format_input(sample)`, and `predict(...) -> list[str]`. All models output text. `predict` is the code that runs on the cluster; in mock mode the same code runs locally.
 
-`Metric` (ABC) — **implemented** — exposes `applicable_modalities` and `compute(predictions, targets) -> dict[str, float]`. `MCQMetrics` is the concrete implementation: returns accuracy, balanced\_accuracy, F1, precision, recall (macro + weighted), n\_unparseable, and per-class breakdowns in a single call.
+`Metric` (ABC) — **implemented** — exposes `applicable_modalities`, `compute(predictions, targets) -> dict[str, float]`, and `label_predictions(predictions, targets)` (per-sample answer-token extraction the pipeline uses for is_correct). Two concrete metrics: `MCQMetrics` (A–D letters) and `ClassificationMetrics` (free class labels, e.g. UCR ICL — balanced accuracy over an arbitrary label set). Both return accuracy, balanced\_accuracy, F1, precision, recall (macro + weighted), n\_unparseable, and per-class breakdowns in one call.
 
-**Modality as the matching key.** A `Dataset` declares its modality (`"multimodal"` for all current datasets); that single tag determines which `ModelWrapper`s are compatible and which `Metric`s apply. No `if benchmark == X` branching anywhere — modality drives the routing.
+**Per-dataset evaluation method.** A `Dataset` declares its `metric` (defaults to `MCQMetrics` on the ABC; `UCRICLDataset` overrides to `ClassificationMetrics`). The runners read `dataset.metric` and the pipeline scores each sample via `metric.label_predictions`, so nothing hardcodes a metric — adding a benchmark with a new answer format = one dataset subclass plus (if needed) one metric.
+
+**Modality as the compatibility key.** A `Dataset` declares its modality (`"multimodal"` for all current datasets); that single tag determines which `ModelWrapper`s are compatible. No `if benchmark == X` branching anywhere — modality drives model routing, the dataset's `metric` drives scoring.
 
 ### Layer 4 — Execution
 
@@ -73,7 +75,7 @@ These three ABCs and one dataclass are the heart of the system. Get their interf
 
 ### Layer 5 — Data & Configuration
 
-`ResultsRepository` is a thin SQLite wrapper storing `EvaluationResult` records (model name, benchmark name, modality, metrics dict, timestamp, execution time, `exp_id`, `max_samples`). Schema migrations run automatically in `__init__` so existing DBs upgrade on first open. `ModelRegistry` and `BenchmarkRegistry` are loaded at startup and answer two questions: "what's available?" for the UI, and "give me object X" for the service.
+`ResultsRepository` is a thin SQLite wrapper with three tables: `evaluation_results` (model name, benchmark name, modality, metrics dict, timestamp, execution time, `exp_id`, `max_samples`, `notes`), `sample_predictions` (per-question records), and `jobs` (persisted `JobRecord` snapshots so jobs survive app restarts). Schema migrations run automatically in `__init__` so existing DBs upgrade on first open. `ModelRegistry` and `BenchmarkRegistry` are loaded at startup and answer two questions: "what's available?" for the UI, and "give me object X" for the service.
 
 ### Key interactions
 
@@ -89,7 +91,8 @@ fmeval/
   app/                              # ✅ Streamlit UI
     main.py                         # ✅ entry point + @st.cache_resource singleton
     config_page.py                  # ✅ render_config_page(service)
-    dashboard_page.py               # ✅ render_dashboard_page(service)
+    dashboard_page.py               # ✅ render_dashboard_page(service) — Runs/Compare/Trends/Jobs sub-tabs
+    ui_components.py                # ✅ shared CSS, status badges, Q/A + diff cards (pure rendering)
   core/
     sample.py                       # ✅ Sample dataclass (input_text, input_ts, output)
     datasets/
@@ -98,14 +101,17 @@ fmeval/
       formatters.py                 # ✅ SampleFormatter (combined ↔ separate)
       template.py                   # ✅ JSONLMultimodalDataset (copy-paste template)
       tsexam1.py                    # ✅ TimeSeriesExam1Dataset (HuggingFace, 746 MCQ)
+      ucr_icl.py                    # ✅ UCRICLDataset (UCR ARFF few-shot ICL classification; lazy, UCR_DATA_PATH)
     models/
       base.py                       # ✅ ModelWrapper ABC
       mock_model.py                 # ✅ MockModel (fixed-answer baseline)
+      random_label_model.py         # ✅ RandomLabelModel (CPU chance baseline; parses options from prompt)
       chatts_model.py               # ✅ ChatTSModel (bytedance-research/ChatTS-8B, separate mode, lazy loading, cluster-verified)
       __init__.py                   # ✅
     metrics/
-      base.py                       # ✅ Metric ABC
+      base.py                       # ✅ Metric ABC (compute + label_predictions)
       mcq_metrics.py                # ✅ MCQMetrics + extract_letter()
+      classification_metrics.py     # ✅ ClassificationMetrics + extract_label() (free class labels)
       __init__.py                   # ✅
   evaluation/                       # ✅ Local synchronous evaluation pipeline
     pipeline.py                     # ✅ LocalEvaluationPipeline
@@ -120,8 +126,8 @@ fmeval/
     cluster_worker.py               # ✅ Worker uploaded per job; runs LocalEvaluationPipeline
     __init__.py                     # ✅
   storage/                          # ✅ SQLite persistence
-    models.py                       # ✅ EvaluationResult dataclass
-    repository.py                   # ✅ ResultsRepository
+    models.py                       # ✅ EvaluationResult (incl. notes) + JobRecord dataclasses
+    repository.py                   # ✅ ResultsRepository (results, sample_predictions, jobs tables; update/delete)
     __init__.py                     # ✅
   config/                           # ✅ Registries
     model_registry.py               # ✅ ModelInfo, ModelRegistry, build_default_model_registry() — registers mock_always_{a,b,c} + chatts-8b
@@ -129,8 +135,8 @@ fmeval/
     __init__.py                     # ✅
   services/
     __init__.py                     # ✅
-    types.py                        # ✅ EvaluationConfig (+ max_samples, exp_id), DashboardData, ResultsFilter, GroupedResult
-    evaluation_service.py           # ✅ EvaluationService (fully implemented)
+    types.py                        # ✅ EvaluationConfig, DashboardData, ResultsFilter, GroupedResult, RunComparison, SampleDiff, CategoryBreakdown
+    evaluation_service.py           # ✅ EvaluationService (run/poll/restore jobs, edit/delete runs, compare, breakdowns)
 data/
   results.db                        # SQLite results DB (auto-created on first run)
 notebooks/
@@ -143,6 +149,8 @@ tests/
     test_jsonl_dataset.py           # ✅
     test_tsexam1.py                 # ✅
     test_mcq_metrics.py             # ✅
+    test_classification_metrics.py  # ✅ ClassificationMetrics + extract_label() (label set, longest-first)
+    test_ucr_icl.py                 # ✅ UCRICLDataset (synthetic ARFF, end-to-end via RandomLabelModel)
     test_mock_model.py              # ✅
     test_chatts_model.py            # ✅ ChatTSModel: format_input + predict (mocked, no GPU)
   evaluation/
@@ -169,7 +177,7 @@ README.md         # setup + launch commands (local and Slurm)
 - **Storage:** local DB / structured files — **SQLite** is the natural fit for the POC.
 - **Async by nature:** evaluations are NOT real-time. Jobs go into a queue; the UI must clearly separate the *configuration* phase from the *results-viewing* phase. The app must stay responsive (screen transitions / standard queries < 2s) while jobs run.
 - **Metrics:** multimodal MCQ tasks → `MCQMetrics` (accuracy, balanced\_accuracy, F1, precision, recall — all macro + weighted + per-class).
-- **Stored per run:** model name, benchmark name, modality, timestamp, execution time, computed metrics, `exp_id` (experiment label), `max_samples`.
+- **Stored per run:** model name, benchmark name, modality, timestamp, execution time, computed metrics, `exp_id` (experiment label), `max_samples`, `notes` (editable free text). `exp_id` and `notes` are the only editable fields; metrics are immutable. Runs can be deleted (result + sample predictions + job record).
 
 ### POC / demo constraint (important)
 Real runs can take hours and depend on cluster availability, so the system **supports an offline/simulated mode** via `MockRunner` (local thread) and a **live cluster mode** via `SlurmRunner` — switchable with `FMEVAL_RUNNER=mock|slurm`. The demo never depends on a live queue; set `FMEVAL_RUNNER=mock` (the default) to run everything locally.
@@ -205,6 +213,7 @@ Real runs can take hours and depend on cluster availability, so the system **sup
 #   SLURM_MEM_GB=24 \
 #   SLURM_TIME_LIMIT=02:00:00 \
 #   CHATTS_MODEL_PATH=/home/aviramom/models/chatts-8b \
+#   UCR_DATA_PATH=/cs/azencot_fsas/multimodal_ts/datasets/Univariate_arff \  ← required for icl_ucr_* benchmarks
 #   .venv/bin/streamlit run fmeval/app/main.py
 
 # sync code changes to the cluster:

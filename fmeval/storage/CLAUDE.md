@@ -13,9 +13,9 @@ to construct objects in `get_sample_predictions`) and may import `core/` types.
 
 ```
 storage/
-  __init__.py     ✅ exports EvaluationResult, ResultsRepository
+  __init__.py     ✅ exports EvaluationResult, JobRecord, ResultsRepository
   CLAUDE.md
-  models.py       ✅ EvaluationResult dataclass
+  models.py       ✅ EvaluationResult + JobRecord dataclasses
   repository.py   ✅ ResultsRepository (SQLite)
 ```
 
@@ -24,7 +24,7 @@ No separate `migrations.py` — schema creation (`CREATE TABLE IF NOT EXISTS`) p
 
 ---
 
-## EvaluationResult (`models.py`)
+## EvaluationResult & JobRecord (`models.py`)
 
 ```python
 @dataclass
@@ -38,9 +38,27 @@ class EvaluationResult:
     execution_time_seconds: float
     exp_id: str = ""    # experiment label; "" means auto-slug was used
     max_samples: int = 0
+    notes: str = ""     # free-text user annotation; editable after the run
+
+@dataclass
+class JobRecord:
+    """Persisted snapshot of an EvaluationJob. Storage must not import
+    execution/, so status is a plain string and the handle is pre-serialized
+    JSON — the service maps EvaluationJob <-> JobRecord."""
+    job_id: str
+    model_name: str
+    benchmark_name: str
+    modality: str
+    status: str                 # JobStatus.value
+    created_at: datetime
+    max_samples: int
+    exp_id: str = ""
+    runner_type: str = "unknown"   # "mock" | "slurm"
+    handle_json: str | None = None
+    error_message: str | None = None
 ```
 
-`exp_id` and `max_samples` have defaults so existing call-sites don't break.
+`exp_id`, `max_samples`, and `notes` have defaults so existing call-sites don't break.
 
 ---
 
@@ -79,6 +97,19 @@ class ResultsRepository:
     def get_sample_predictions(self, job_id: str) -> list[SamplePrediction]:
         # Returns all SamplePrediction records for a job, ordered by sample_idx.
         # Returns [] if the job has no stored predictions (pre-feature runs).
+
+    def update_run(self, job_id, *, exp_id=None, notes=None) -> bool:
+        # Updates only the non-None kwargs; metrics are immutable.
+        # Returns False for unknown job_id or nothing to set.
+
+    def delete_run(self, job_id: str) -> bool:
+        # Deletes the result row + its sample_predictions in one transaction.
+
+    # Jobs table — lets the service rediscover jobs after an app restart:
+    def save_job(self, record: JobRecord) -> None: ...        # upsert on job_id
+    def update_job_status(self, job_id, status, error_message=None) -> None: ...
+    def load_jobs(self, limit: int = 100) -> list[JobRecord]: ...  # newest first
+    def delete_job(self, job_id: str) -> None: ...
 ```
 
 `db_path.parent.mkdir(parents=True, exist_ok=True)` is called in `__init__`, so
@@ -98,7 +129,22 @@ CREATE TABLE IF NOT EXISTS evaluation_results (
     timestamp               TEXT NOT NULL,              -- ISO-8601
     execution_time_seconds  REAL NOT NULL,
     exp_id                  TEXT NOT NULL DEFAULT '',
-    max_samples             INTEGER NOT NULL DEFAULT 0
+    max_samples             INTEGER NOT NULL DEFAULT 0,
+    notes                   TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    job_id         TEXT PRIMARY KEY,
+    model_name     TEXT NOT NULL,
+    benchmark_name TEXT NOT NULL,
+    modality       TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    created_at     TEXT NOT NULL,            -- ISO-8601
+    max_samples    INTEGER NOT NULL,
+    exp_id         TEXT NOT NULL DEFAULT '',
+    runner_type    TEXT NOT NULL,
+    handle_json    TEXT,
+    error_message  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sample_predictions (
@@ -120,7 +166,7 @@ CREATE INDEX IF NOT EXISTS idx_sp_job_id ON sample_predictions(job_id);
 `metrics` and `metadata_json` are serialized with `json.dumps` / `json.loads`.
 `timestamp` uses `.isoformat()` / `datetime.fromisoformat()`.
 
-`exp_id` and `max_samples` were added to `evaluation_results` via `ALTER TABLE ADD COLUMN`
+`exp_id`, `max_samples`, and `notes` were added to `evaluation_results` via `ALTER TABLE ADD COLUMN`
 migrations in `__init__` (wrapped in `try/except sqlite3.OperationalError`) — these run
 on every open and are a no-op on already-migrated DBs. The `sample_predictions` table is
 created via `CREATE TABLE IF NOT EXISTS` so it is also a no-op on existing DBs.

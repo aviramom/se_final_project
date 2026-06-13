@@ -14,9 +14,10 @@ between a benchmark name and a metric.
 ```
 metrics/
   CLAUDE.md
-  __init__.py       ← exports: Metric, MCQMetrics, extract_letter
-  base.py           ← ✅ Metric ABC
-  mcq_metrics.py    ← ✅ MCQMetrics (all MCQ evaluation metrics) + extract_letter()
+  __init__.py                 ← exports: Metric, MCQMetrics, extract_letter, ClassificationMetrics, extract_label
+  base.py                     ← ✅ Metric ABC (compute + label_predictions)
+  mcq_metrics.py              ← ✅ MCQMetrics (A–D MCQ metrics) + extract_letter()
+  classification_metrics.py   ← ✅ ClassificationMetrics (free class labels) + extract_label()
 ```
 
 ---
@@ -38,7 +39,24 @@ class Metric(ABC):
         """Returns a flat dict of metric_name → score (not a single float).
         A single subclass can report multiple related scores in one pass."""
         ...
+
+    @abstractmethod
+    def label_predictions(
+        self, predictions: list[str], targets: list[str]
+    ) -> tuple[list[str | None], list[str | None]]:
+        """Per-sample (predicted_label, true_label) tokens — the pipeline's
+        counterpart to compute(). Lets the pipeline record is_correct without
+        knowing how this metric parses an answer (MCQ letter, class label, …).
+        None = unparseable."""
+        ...
 ```
+
+**Which metric runs is decided by the dataset, not the modality.** Each `Dataset`
+exposes a `metric` property (default `MCQMetrics` on the ABC; `UCRICLDataset`
+returns `ClassificationMetrics`). `MockRunner` and `cluster_worker.py` build the
+pipeline with `dataset.metric`; the pipeline calls `metric.label_predictions` for
+per-sample scoring. `applicable_modalities` is still declared for documentation
+and future modality-based filtering.
 
 ---
 
@@ -77,10 +95,28 @@ the model or benchmark.
 
 ---
 
-## Metric assignments by modality
+## ClassificationMetrics (`classification_metrics.py`) — **implemented**
 
-| Modality      | Metrics applied          |
-|---------------|--------------------------|
-| `multimodal`  | MCQMetrics               |
-| `text`        | MCQMetrics               |
-| `time_series` | *(reserved — not current focus)* |
+Free-label classification (the UCR ICL benchmark). Same aggregate-key shape as
+`MCQMetrics` (so the dashboard, grouping, and CSV export need no special-casing)
+but over an arbitrary class-label set inferred from the targets — not A–D letters.
+Adds `num_of_classes`. `balanced_accuracy` is the primary metric (UCR is often
+class-imbalanced).
+
+**`extract_label(response, label_set) -> str | None`** — recovers the predicted
+label by matching `response` against the known labels using the reference UCR
+evaluator's priority rules (exact, `The class is X`, `Predicted Label: X`,
+`Predicted: X`, `label: X`, `label is X`). Candidates are tried **longest-first**
+with a `(?!\d)` guard so a short label can't shadow a longer one (`"1"` vs `"10"`).
+Unmatched predictions become an `INVALID_PREDICTION` sentinel (counted wrong,
+never a phantom class).
+
+## Metric assignments
+
+The dataset picks its metric (`dataset.metric`); modality is no longer the
+selector. Current assignments:
+
+| Dataset family        | Metric                |
+|-----------------------|-----------------------|
+| `tsexam1` (MCQ)       | MCQMetrics            |
+| `icl_ucr_*` (UCR ICL) | ClassificationMetrics |

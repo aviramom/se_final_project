@@ -45,7 +45,14 @@ class EvaluationJob:
     exp_id: str = ""           # experiment label; propagated to EvaluationResult on completion
     handle: Any = None         # Future for MockRunner; Slurm job ID for SlurmRunner
     error_message: str | None = None
+    dataset_params: dict = {}  # benchmark-specific dataset hints (few-shot k/strategy/seed)
 ```
+
+`dataset_params` carries the few-shot ICL options from `EvaluationConfig`.
+`SlurmRunner` emits them as worker CLI flags (`--num-shots/--picking-strategy/
+--random-seed`) so the cluster reconstructs the dataset exactly as configured.
+It is **not** persisted to `JobRecord` — restored jobs are only polled, by which
+point submission (which baked the params into the remote `job.sh`) already happened.
 
 `handle` is typed `Any` — the service never inspects it directly.
 
@@ -74,6 +81,16 @@ class Runner(ABC):
         """Return a brief error log snippet for a failed job, or None.
         Default returns None. SlurmRunner overrides to fetch the .err file tail."""
         return None
+
+    runner_type: str = "unknown"   # class attr; "mock" / "slurm" — persisted with each job
+
+    def serialize_handle(self, handle: Any) -> str | None:
+        """JSON for persistence, or None (default). MockRunner keeps the default —
+        Futures can't survive a restart. SlurmRunner serializes SlurmHandle
+        (three plain strings) so a restarted app can reattach."""
+
+    def deserialize_handle(self, handle_json: str) -> Any:
+        """Rebuild a handle from serialize_handle() output (default None)."""
 ```
 
 The interface passes `dataset` and `model` directly. `SlurmRunner` generates the
@@ -91,8 +108,9 @@ Runs `LocalEvaluationPipeline` in a `ThreadPoolExecutor` (max 2 workers). Uses
 `concurrent.futures.Future` for status polling — `.done()`, `.running()`, `.exception()`
 and `.result()` are all available without a lock on the result itself.
 
-`MCQMetrics` is hardcoded as the metric — all current datasets are multimodal MCQ.
-When a non-MCQ dataset is added, pass a metric factory into `MockRunner.__init__`.
+The metric comes from `dataset.metric` (each `Dataset` declares its evaluation
+method — `MCQMetrics` for MCQ benchmarks, `ClassificationMetrics` for UCR ICL).
+`cluster_worker.py` does the same. Neither hardcodes a metric.
 
 ```python
 class MockRunner(Runner):
@@ -141,7 +159,8 @@ available GPU. **Always set this for real model runs** — the cluster has Pasca
 ## cluster_worker.py
 
 Standalone script that runs inside the Slurm job. Accepts `--dataset`, `--model`,
-`--max-samples`, `--output` CLI args. Imports `fmeval` from `~/fmeval_project` on the
+`--max-samples`, `--output`, and optional few-shot flags `--num-shots`,
+`--picking-strategy`, `--random-seed` (forwarded to `registry.get(dataset_params=…)`). Imports `fmeval` from `~/fmeval_project` on the
 cluster (installed as editable via `pip install -e .`), runs `LocalEvaluationPipeline`,
 and writes `result.json`. Prints `FMEVAL_RESULT_WRITTEN:<path>` as a sentinel line that
 `SlurmRunner.get_result()` looks for before fetching the file.

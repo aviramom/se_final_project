@@ -73,6 +73,9 @@ def main() -> None:
         page_icon="📊",
         layout="wide",
     )
+    from fmeval.app.ui_components import inject_css
+
+    inject_css()
     st.title("Foundation Model Evaluation Platform")
 
     service = get_service()

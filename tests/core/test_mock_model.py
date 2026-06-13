@@ -31,8 +31,8 @@ class TestMockModel:
             MockModel("E")
 
     def test_model_name_reflects_answer(self):
-        assert MockModel("A").model_name == "mock_always_A"
-        assert MockModel("B").model_name == "mock_always_B"
+        assert MockModel("A").model_name == "mock_always_a"
+        assert MockModel("B").model_name == "mock_always_b"
 
     def test_supported_modalities_includes_multimodal(self):
         assert "multimodal" in MockModel().supported_modalities

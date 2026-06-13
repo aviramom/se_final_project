@@ -27,5 +27,11 @@ class EvaluationJob:
     created_at: datetime
     max_samples: int
     exp_id: str = ""
-    handle: Any = field(default=None, repr=False)  # runner-specific (Future, Slurm ID, …)
+    handle: Any = field(
+        default=None, repr=False
+    )  # runner-specific (Future, Slurm ID, …)
     error_message: str | None = None
+    # Benchmark-specific dataset construction hints (e.g. few-shot k/strategy/seed).
+    # Used by SlurmRunner to pass options to the cluster worker; not persisted —
+    # restored jobs are only polled, by which point submission already happened.
+    dataset_params: dict = field(default_factory=dict)

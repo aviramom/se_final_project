@@ -67,6 +67,17 @@ class MCQMetrics(Metric):
     def applicable_modalities(self) -> list[Literal["text", "time_series", "multimodal"]]:
         return ["text", "multimodal"]
 
+    def label_predictions(
+        self,
+        predictions: list[str],
+        targets: list[str],
+    ) -> tuple[list[str | None], list[str | None]]:
+        """Per-sample answer letters extracted from predictions and targets."""
+        return (
+            [extract_letter(p) for p in predictions],
+            [extract_letter(t) for t in targets],
+        )
+
     def compute(
         self,
         predictions: list[str],

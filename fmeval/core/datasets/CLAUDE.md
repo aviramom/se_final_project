@@ -20,6 +20,7 @@ datasets/
   formatters.py        ← SampleFormatter: canonical ↔ combined conversion
   template.py          ← JSONLMultimodalDataset — copy-paste template for new benchmarks
   tsexam1.py           ← ✅ AutonLab/TimeSeriesExam1 (HuggingFace, 746 MCQ questions)
+  ucr_icl.py           ← ✅ UCRICLDataset — UCR ARFF few-shot ICL classification (lazy, UCR_DATA_PATH)
   <benchmark>.py       ← one file per concrete benchmark
 ```
 
@@ -37,12 +38,21 @@ class Dataset(ABC):
     @abstractmethod
     def name(self) -> str: ...         # registry key + stored in results
 
+    @property
+    def metric(self) -> Metric: ...    # evaluation method; default MCQMetrics, override per benchmark
+
     @abstractmethod
     def __iter__(self) -> Iterator[Sample]: ...   # lazy preferred
 
     @abstractmethod
     def __len__(self) -> int: ...
 ```
+
+`metric` has a concrete default (`MCQMetrics`) so existing MCQ benchmarks need no
+change. A benchmark with a different answer format overrides it — e.g.
+`UCRICLDataset` returns `ClassificationMetrics`. The runners read `dataset.metric`
+and the pipeline scores per-sample via `metric.label_predictions`, so no layer
+hardcodes a metric.
 
 ---
 
@@ -117,7 +127,14 @@ the benchmark uses different key names; override `__iter__` for non-JSONL format
    - Put raw numpy arrays in `input_ts` in matching order.
    - Set `output` to the ground-truth text string.
    - Call `self._validate_sample(sample)` before `yield`.
-5. Register the class in `fmeval/config/benchmark_registry.py` — zero other changes.
+5. If the answer format isn't A–D MCQ, override the `metric` property to return
+   the right `Metric` (e.g. `ClassificationMetrics` for free class labels).
+6. Register the class in `fmeval/config/benchmark_registry.py` — zero other changes.
+
+`ucr_icl.py` is the reference for a non-MCQ benchmark: lazy ARFF loading from a
+`UCR_DATA_PATH` root, train-only `[-1, 1]` normalization, per-class support-set
+selection, `<TS_N>` placeholders for the support series + query, and a `metric`
+override to `ClassificationMetrics`.
 
 ---
 

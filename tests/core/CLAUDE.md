@@ -16,6 +16,8 @@ Run: `.venv/bin/pytest tests/core/ -v`
 | `test_jsonl_dataset.py` | `JSONLMultimodalDataset` loading, `len()`, `max_samples`, modality, placeholder validation, malformed input |
 | `test_tsexam1.py` | `TimeSeriesExam1Dataset` — single/two-TS layouts, option letter assignment, metadata, `max_samples` (HF dataset mocked) |
 | `test_mcq_metrics.py` | `extract_letter` patterns, `MCQMetrics.compute` — all metric keys, per-class breakdown, balanced accuracy, unparseable handling |
+| `test_classification_metrics.py` | `extract_label` priority rules + longest-first (`1` vs `10`), `ClassificationMetrics.compute` over a free label set, balanced accuracy, unparseable handling |
+| `test_ucr_icl.py` | `UCRICLDataset` (synthetic ARFF) — lazy load, support-set size by k, `<TS_N>`/`input_ts` alignment, normalization, max_samples subsample, registry few-shot param threading, end-to-end via `RandomLabelModel` |
 | `test_mock_model.py` | `MockModel` — fixed answer, `format_input` inlines TS, `predict` batch length |
 
 ---

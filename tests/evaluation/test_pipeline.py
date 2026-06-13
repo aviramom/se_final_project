@@ -93,7 +93,7 @@ def test_num_samples_correct():
 
 def test_model_name_in_result():
     result = _run(["A) yes"])
-    assert result.model_name == "mock_always_A"
+    assert result.model_name == "mock_always_a"
 
 
 def test_dataset_name_in_result():
@@ -217,7 +217,7 @@ def test_to_json_is_valid_json():
     import json
     result = _run(["A) x", "B) y"])
     parsed = json.loads(result.to_json())
-    assert parsed["model_name"] == "mock_always_A"
+    assert parsed["model_name"] == "mock_always_a"
     assert parsed["num_samples"] == 2
     assert len(parsed["sample_predictions"]) == 2
 
@@ -227,7 +227,7 @@ def test_to_json_is_valid_json():
 def test_summary_contains_model_name():
     result = _run(["A) x"])
     s = result.summary()
-    assert "mock_always_A" in s
+    assert "mock_always_a" in s
 
 
 def test_summary_contains_accuracy():

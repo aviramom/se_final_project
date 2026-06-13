@@ -9,6 +9,7 @@ from fmeval.core.datasets.formatters import (
 )
 from fmeval.core.datasets.template import JSONLMultimodalDataset
 from fmeval.core.datasets.tsexam1 import TimeSeriesExam1Dataset
+from fmeval.core.datasets.ucr_icl import UCRICLDataset
 
 __all__ = [
     "Dataset",
@@ -18,4 +19,5 @@ __all__ = [
     "DefaultTSSerializer",
     "JSONLMultimodalDataset",
     "TimeSeriesExam1Dataset",
+    "UCRICLDataset",
 ]

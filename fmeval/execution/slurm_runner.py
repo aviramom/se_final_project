@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import subprocess
@@ -61,16 +62,35 @@ class SlurmRunner(Runner):
     Configure ssh_key_path in SlurmConfig or ensure the key is loaded in ssh-agent.
     """
 
+    runner_type = "slurm"
+
     def __init__(self, config: SlurmConfig) -> None:
         self._cfg = config
         # The cluster_worker.py file lives next to this module and is uploaded per-job.
         self._worker_local_path = Path(__file__).parent / "cluster_worker.py"
 
+    def serialize_handle(self, handle: Any) -> str | None:
+        """Persist a SlurmHandle as JSON so a restarted app can reattach.
+
+        The handle is three plain strings; get_status() already falls back to
+        a result.json existence check once the job has left squeue, so a
+        rebuilt handle polls correctly even if the job finished while the
+        app was down.
+        """
+        if isinstance(handle, SlurmHandle):
+            return json.dumps(dataclasses.asdict(handle))
+        return None
+
+    def deserialize_handle(self, handle_json: str) -> SlurmHandle:
+        return SlurmHandle(**json.loads(handle_json))
+
     # ------------------------------------------------------------------
     # Runner interface
     # ------------------------------------------------------------------
 
-    def submit(self, job: EvaluationJob, dataset: Dataset, model: ModelWrapper) -> SlurmHandle:
+    def submit(
+        self, job: EvaluationJob, dataset: Dataset, model: ModelWrapper
+    ) -> SlurmHandle:
         """Upload scripts, submit via sbatch, return a SlurmHandle with the job ID."""
         remote_job_dir = f"{self._cfg.remote_work_dir}/{job.job_id}"
         result_json = f"{remote_job_dir}/result.json"
@@ -103,7 +123,10 @@ class SlurmRunner(Runner):
 
         logger.info(
             "Submitted Slurm job %s for fmeval job %s (dataset=%s model=%s)",
-            slurm_job_id, job.job_id, dataset.name, model.model_name,
+            slurm_job_id,
+            job.job_id,
+            dataset.name,
+            model.model_name,
         )
 
         return SlurmHandle(
@@ -139,7 +162,9 @@ class SlurmRunner(Runner):
             if "EXISTS" in out:
                 return JobStatus.COMPLETED
         except RuntimeError as exc:
-            logger.warning("File-existence check failed for job %s: %s", job.job_id, exc)
+            logger.warning(
+                "File-existence check failed for job %s: %s", job.job_id, exc
+            )
 
         return JobStatus.FAILED
 
@@ -160,7 +185,9 @@ class SlurmRunner(Runner):
         """SCP result.json from the cluster and parse it into a RunResult."""
         handle: SlurmHandle | None = job.handle
         if handle is None:
-            raise RuntimeError(f"Job {job.job_id} has no Slurm handle — was it submitted?")
+            raise RuntimeError(
+                f"Job {job.job_id} has no Slurm handle — was it submitted?"
+            )
 
         with tempfile.TemporaryDirectory() as tmpdir:
             local_json = Path(tmpdir) / "result.json"
@@ -178,9 +205,12 @@ class SlurmRunner(Runner):
         """Build the ssh command prefix (with key path if configured)."""
         args = [
             "ssh",
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "ConnectTimeout=30",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "ConnectTimeout=30",
         ]
         if self._cfg.ssh_key_path:
             args += ["-i", self._cfg.ssh_key_path]
@@ -191,9 +221,12 @@ class SlurmRunner(Runner):
         """Build the scp command prefix (with key path if configured)."""
         args = [
             "scp",
-            "-o", "BatchMode=yes",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "ConnectTimeout=30",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "ConnectTimeout=30",
         ]
         if self._cfg.ssh_key_path:
             args += ["-i", self._cfg.ssh_key_path]
@@ -211,7 +244,9 @@ class SlurmRunner(Runner):
             )
         return result.stdout
 
-    def _scp_to_remote(self, local_path: str, remote_path: str, timeout: int = 120) -> None:
+    def _scp_to_remote(
+        self, local_path: str, remote_path: str, timeout: int = 120
+    ) -> None:
         """Upload a local file to {user}@{host}:{remote_path}."""
         dest = f"{self._cfg.user}@{self._cfg.host}:{remote_path}"
         cmd = self._scp_base_args() + [local_path, dest]
@@ -222,7 +257,9 @@ class SlurmRunner(Runner):
                 f"  stderr: {result.stderr.strip()}"
             )
 
-    def _scp_from_remote(self, remote_path: str, local_path: str, timeout: int = 120) -> None:
+    def _scp_from_remote(
+        self, remote_path: str, local_path: str, timeout: int = 120
+    ) -> None:
         """Download {user}@{host}:{remote_path} to a local path."""
         src = f"{self._cfg.user}@{self._cfg.host}:{remote_path}"
         cmd = self._scp_base_args() + [src, local_path]
@@ -261,7 +298,11 @@ class SlurmRunner(Runner):
         if cfg.partition:
             lines.append(f"#SBATCH --partition={cfg.partition}")
         if cfg.gpus_per_node > 0:
-            gres = f"gpu:{cfg.gpu_type}:{cfg.gpus_per_node}" if cfg.gpu_type else f"gpu:{cfg.gpus_per_node}"
+            gres = (
+                f"gpu:{cfg.gpu_type}:{cfg.gpus_per_node}"
+                if cfg.gpu_type
+                else f"gpu:{cfg.gpus_per_node}"
+            )
             lines.append(f"#SBATCH --gres={gres}")
         for directive in cfg.extra_sbatch_directives:
             lines.append(directive)
@@ -286,6 +327,15 @@ class SlurmRunner(Runner):
         ]
         if job.max_samples:
             cmd_parts.append(f"    --max-samples {job.max_samples}")
+        # Forward benchmark-specific dataset options (e.g. few-shot k/strategy/seed)
+        # so the worker reconstructs the dataset exactly as configured in the UI.
+        params = job.dataset_params or {}
+        if "num_shots" in params:
+            cmd_parts.append(f"    --num-shots {params['num_shots']}")
+        if "picking_strategy" in params:
+            cmd_parts.append(f"    --picking-strategy {params['picking_strategy']}")
+        if "random_seed" in params:
+            cmd_parts.append(f"    --random-seed {params['random_seed']}")
         cmd_parts.append(f"    --output {result_json}")
 
         lines.append(" \\\n".join(cmd_parts))
@@ -314,6 +364,7 @@ class SlurmRunner(Runner):
 # ------------------------------------------------------------------
 # RunResult reconstruction from JSON
 # ------------------------------------------------------------------
+
 
 def _parse_run_result(data: dict[str, Any]) -> RunResult:
     """Reconstruct a RunResult from the JSON dict written by cluster_worker.py."""

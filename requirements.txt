@@ -1,5 +1,5 @@
 # ── UI ────────────────────────────────────────────────────────────────────────
-streamlit>=1.35.0
+streamlit>=1.37.0
 plotly>=5.22.0          # charts on the dashboard page
 
 # ── Data / storage ────────────────────────────────────────────────────────────
@@ -17,6 +17,7 @@ torchvision>=0.17.0    # required by Qwen3VLVideoProcessor
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
 scikit-learn>=1.4.0     # F1 score; MSE/MAE also available as fallback
+scipy>=1.11.0           # ARFF loading for the UCR ICL benchmark
 
 # ── Dev / quality ─────────────────────────────────────────────────────────────
 pytest>=8.2.0

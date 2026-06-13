@@ -8,6 +8,7 @@ The tests cover:
   - get_status() with various squeue outputs and file-existence fallback
   - get_result() JSON parsing
 """
+
 from __future__ import annotations
 
 import json
@@ -24,6 +25,7 @@ from fmeval.execution.slurm_runner import SlurmHandle, SlurmRunner, _parse_run_r
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def cfg() -> SlurmConfig:
@@ -74,12 +76,18 @@ def handle() -> SlurmHandle:
 # _parse_sbatch_output
 # ---------------------------------------------------------------------------
 
+
 class TestParseSbatchOutput:
     def test_standard_output(self, runner: SlurmRunner) -> None:
-        assert runner._parse_sbatch_output("Submitted batch job 12345678\n") == "12345678"
+        assert (
+            runner._parse_sbatch_output("Submitted batch job 12345678\n") == "12345678"
+        )
 
     def test_extra_whitespace(self, runner: SlurmRunner) -> None:
-        assert runner._parse_sbatch_output("  Submitted batch job   987654  \n") == "987654"
+        assert (
+            runner._parse_sbatch_output("  Submitted batch job   987654  \n")
+            == "987654"
+        )
 
     def test_no_job_id_raises(self, runner: SlurmRunner) -> None:
         with pytest.raises(RuntimeError, match="Could not parse"):
@@ -90,8 +98,11 @@ class TestParseSbatchOutput:
 # _build_sbatch_script
 # ---------------------------------------------------------------------------
 
+
 class TestBuildSbatchScript:
-    def test_contains_required_directives(self, runner: SlurmRunner, job: EvaluationJob) -> None:
+    def test_contains_required_directives(
+        self, runner: SlurmRunner, job: EvaluationJob
+    ) -> None:
         script = runner._build_sbatch_script(
             job=job,
             dataset_name="tsexam1",
@@ -109,7 +120,9 @@ class TestBuildSbatchScript:
         assert "module load cuda/12.1" in script
         assert "export PYTHONPATH=/home/testuser/fmeval:$PYTHONPATH" in script
 
-    def test_contains_worker_invocation(self, runner: SlurmRunner, job: EvaluationJob) -> None:
+    def test_contains_worker_invocation(
+        self, runner: SlurmRunner, job: EvaluationJob
+    ) -> None:
         script = runner._build_sbatch_script(
             job=job,
             dataset_name="tsexam1",
@@ -122,7 +135,9 @@ class TestBuildSbatchScript:
         assert "--max-samples 50" in script
         assert "--output /jobs/abc/result.json" in script
 
-    def test_no_max_samples_omits_flag(self, runner: SlurmRunner, job: EvaluationJob) -> None:
+    def test_no_max_samples_omits_flag(
+        self, runner: SlurmRunner, job: EvaluationJob
+    ) -> None:
         job.max_samples = 0  # falsy → no --max-samples flag
         script = runner._build_sbatch_script(
             job=job,
@@ -133,7 +148,43 @@ class TestBuildSbatchScript:
         )
         assert "--max-samples" not in script
 
-    def test_no_partition_omits_directive(self, cfg: SlurmConfig, job: EvaluationJob) -> None:
+    def test_few_shot_params_forwarded(
+        self, runner: SlurmRunner, job: EvaluationJob
+    ) -> None:
+        job.dataset_params = {
+            "num_shots": 3,
+            "picking_strategy": "first",
+            "random_seed": 7,
+        }
+        script = runner._build_sbatch_script(
+            job=job,
+            dataset_name="icl_ucr_GunPoint",
+            model_name="random_label",
+            remote_job_dir="/jobs/abc",
+            result_json="/jobs/abc/result.json",
+        )
+        assert "--num-shots 3" in script
+        assert "--picking-strategy first" in script
+        assert "--random-seed 7" in script
+
+    def test_no_dataset_params_omits_few_shot_flags(
+        self, runner: SlurmRunner, job: EvaluationJob
+    ) -> None:
+        # Default job (empty dataset_params) → no few-shot flags emitted.
+        script = runner._build_sbatch_script(
+            job=job,
+            dataset_name="tsexam1",
+            model_name="mock_always_a",
+            remote_job_dir="/jobs/abc",
+            result_json="/jobs/abc/result.json",
+        )
+        assert "--num-shots" not in script
+        assert "--picking-strategy" not in script
+        assert "--random-seed" not in script
+
+    def test_no_partition_omits_directive(
+        self, cfg: SlurmConfig, job: EvaluationJob
+    ) -> None:
         cfg.partition = None
         runner = SlurmRunner(cfg)
         script = runner._build_sbatch_script(
@@ -162,6 +213,7 @@ class TestBuildSbatchScript:
 # submit()
 # ---------------------------------------------------------------------------
 
+
 class TestSubmit:
     def test_submit_calls_ssh_and_scp_in_order(
         self, runner: SlurmRunner, job: EvaluationJob
@@ -172,7 +224,9 @@ class TestSubmit:
         mock_model.model_name = "mock_always_a"
 
         with (
-            patch.object(runner, "_ssh", return_value="Submitted batch job 55555\n") as mock_ssh,
+            patch.object(
+                runner, "_ssh", return_value="Submitted batch job 55555\n"
+            ) as mock_ssh,
             patch.object(runner, "_scp_to_remote") as mock_scp,
         ):
             handle = runner.submit(job, mock_dataset, mock_model)
@@ -210,17 +264,21 @@ class TestSubmit:
 # get_status()
 # ---------------------------------------------------------------------------
 
+
 class TestGetStatus:
-    @pytest.mark.parametrize("slurm_state,expected", [
-        ("PENDING", JobStatus.QUEUED),
-        ("CONFIGURING", JobStatus.QUEUED),
-        ("RUNNING", JobStatus.RUNNING),
-        ("COMPLETING", JobStatus.RUNNING),
-        ("COMPLETED", JobStatus.COMPLETED),
-        ("FAILED", JobStatus.FAILED),
-        ("CANCELLED", JobStatus.FAILED),
-        ("TIMEOUT", JobStatus.FAILED),
-    ])
+    @pytest.mark.parametrize(
+        "slurm_state,expected",
+        [
+            ("PENDING", JobStatus.QUEUED),
+            ("CONFIGURING", JobStatus.QUEUED),
+            ("RUNNING", JobStatus.RUNNING),
+            ("COMPLETING", JobStatus.RUNNING),
+            ("COMPLETED", JobStatus.COMPLETED),
+            ("FAILED", JobStatus.FAILED),
+            ("CANCELLED", JobStatus.FAILED),
+            ("TIMEOUT", JobStatus.FAILED),
+        ],
+    )
     def test_known_states(
         self,
         runner: SlurmRunner,
@@ -292,6 +350,7 @@ class TestGetResult:
 
         def fake_scp_from_remote(remote_path: str, local_path: str, **_) -> None:
             import shutil
+
             shutil.copy(json_file, local_path)
 
         with patch.object(runner, "_scp_from_remote", side_effect=fake_scp_from_remote):
@@ -314,6 +373,7 @@ class TestGetResult:
 # _parse_run_result (unit test for the JSON → RunResult converter)
 # ---------------------------------------------------------------------------
 
+
 class TestParseRunResult:
     def test_full_round_trip(self) -> None:
         result = _parse_run_result(SAMPLE_RESULT_JSON)
@@ -334,3 +394,35 @@ class TestParseRunResult:
         result = _parse_run_result(minimal)
         assert result.run_config == {}
         assert result.sample_predictions == []
+
+
+# ---------------------------------------------------------------------------
+# Handle serialization — reattach support across app restarts
+# ---------------------------------------------------------------------------
+
+
+class TestHandleSerialization:
+    def test_roundtrip(self, runner: SlurmRunner) -> None:
+        handle = SlurmHandle(
+            slurm_job_id="12345",
+            remote_job_dir="/home/testuser/fmeval_jobs/abc",
+            result_json="/home/testuser/fmeval_jobs/abc/result.json",
+        )
+        serialized = runner.serialize_handle(handle)
+        assert serialized is not None
+        assert runner.deserialize_handle(serialized) == handle
+
+    def test_serialize_none_returns_none(self, runner: SlurmRunner) -> None:
+        assert runner.serialize_handle(None) is None
+
+    def test_serialize_foreign_handle_returns_none(self, runner: SlurmRunner) -> None:
+        assert runner.serialize_handle(object()) is None
+
+    def test_serialized_form_is_json(self, runner: SlurmRunner) -> None:
+        handle = SlurmHandle("1", "/dir", "/dir/result.json")
+        serialized = runner.serialize_handle(handle)
+        assert serialized is not None
+        assert json.loads(serialized)["slurm_job_id"] == "1"
+
+    def test_runner_type_is_slurm(self, runner: SlurmRunner) -> None:
+        assert runner.runner_type == "slurm"

@@ -23,11 +23,12 @@ where both LLMs and specialized multimodal models generate a natural-language an
 ```
 models/
   CLAUDE.md
-  __init__.py         ← ✅ exports: ModelWrapper, MockModel, ChatTSModel, QwenVLModel
-  base.py             ← ✅ ModelWrapper ABC
-  mock_model.py       ← ✅ MockModel (fixed-answer baseline for pipeline testing)
-  chatts_model.py     ← ✅ ChatTSModel (bytedance-research/ChatTS-8B, input_mode="separate")
-  qwen_vl_model.py    ← ✅ QwenVLModel (Qwen/Qwen3-VL-8B-Instruct, input_mode="image")
+  __init__.py             ← ✅ exports: ModelWrapper, MockModel, RandomLabelModel, ChatTSModel, QwenVLModel
+  base.py                 ← ✅ ModelWrapper ABC
+  mock_model.py           ← ✅ MockModel (always-"A)" baseline for MCQ pipeline testing)
+  random_label_model.py   ← ✅ RandomLabelModel (CPU chance baseline; parses options from the prompt)
+  chatts_model.py         ← ✅ ChatTSModel (bytedance-research/ChatTS-8B, input_mode="separate")
+  qwen_vl_model.py        ← ✅ QwenVLModel (Qwen/Qwen3-VL-8B-Instruct, input_mode="image")
 ```
 
 ---
@@ -139,6 +140,22 @@ model = MockModel(answer="B")   # always returns "B)"
 
 `input_mode = "combined"` — calls `SampleFormatter.to_combined()` in `format_input`.
 Used to verify the full pipeline end-to-end without loading any real weights.
+Always returns an A–D letter, so it's the baseline for MCQ benchmarks.
+
+---
+
+## RandomLabelModel (`random_label_model.py`) — **implemented**
+
+```python
+model = RandomLabelModel(seed=0)   # CPU, no weights
+```
+
+`input_mode = "combined"`. Parses the `Return ONLY the label as one of: [...]`
+line from each prompt and returns a uniformly random option. Two uses: a genuine
+chance-level baseline for classification benchmarks (≈1/num_classes balanced
+accuracy), and a GPU-free smoke test for the UCR ICL path — unlike `MockModel`'s
+fixed `"A)"`, it emits valid class labels, exercising `ClassificationMetrics`'
+extraction end-to-end. Registered as `random_label` (`requires_gpu=False`).
 
 ---
 

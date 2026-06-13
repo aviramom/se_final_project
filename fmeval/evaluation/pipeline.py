@@ -15,11 +15,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Iterable
 
 from fmeval.core.datasets.base import Dataset
 from fmeval.core.metrics.base import Metric
-from fmeval.core.metrics.mcq_metrics import extract_letter
 from fmeval.core.models.base import ModelWrapper
 from fmeval.evaluation.result import RunResult, SamplePrediction
 
@@ -123,22 +121,27 @@ class LocalEvaluationPipeline:
 
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _build_sample_predictions(samples, raw_predictions, raw_targets):
+    def _build_sample_predictions(self, samples, raw_predictions, raw_targets):
+        # Metric-driven extraction: the metric knows how to turn a raw string
+        # into a canonical answer token (MCQ letter, class label, etc.), so the
+        # pipeline stays agnostic to the benchmark's answer format.
+        pred_labels, correct_labels = self._metric.label_predictions(
+            raw_predictions, raw_targets
+        )
         results = []
         for idx, (sample, pred, target) in enumerate(
             zip(samples, raw_predictions, raw_targets)
         ):
-            pred_letter = extract_letter(pred)
-            correct_letter = extract_letter(target)
+            pred_label = pred_labels[idx]
+            correct_label = correct_labels[idx]
             results.append(
                 SamplePrediction(
                     sample_idx=idx,
                     raw_prediction=pred,
                     raw_target=target,
-                    predicted_letter=pred_letter,
-                    correct_letter=correct_letter,
-                    is_correct=(pred_letter == correct_letter),
+                    predicted_letter=pred_label,
+                    correct_letter=correct_label if correct_label is not None else "",
+                    is_correct=(pred_label == correct_label),
                     input_text=sample.input_text,
                     metadata=dict(sample.metadata),
                 )

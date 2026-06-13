@@ -213,7 +213,7 @@ Real runs can take hours and depend on cluster availability, so the system **sup
 #   SLURM_MEM_GB=24 \
 #   SLURM_TIME_LIMIT=02:00:00 \
 #   CHATTS_MODEL_PATH=/home/aviramom/models/chatts-8b \
-#   UCR_DATA_PATH=/cs/azencot_fsas/multimodal_ts/datasets/Univariate_arff \  ← required for icl_ucr_* benchmarks
+#   UCR_DATA_PATH=/home/aviramom/ucr_data/Univariate_arff \  ← required for icl_ucr_*; home-staged so it's mounted on every node (/cs/azencot_fsas is CS-lab nodes only)
 #   .venv/bin/streamlit run fmeval/app/main.py
 
 # sync code changes to the cluster:

@@ -32,6 +32,13 @@ def _build_runner() -> Runner:
         qwen_vl_path = os.environ.get("QWEN_VL_MODEL_PATH")
         if qwen_vl_path:
             env_cmds.append(f"export QWEN_VL_MODEL_PATH={qwen_vl_path}")
+        # Forward the UCR archive root so the worker finds icl_ucr_* data. Point
+        # it at a home-staged copy: /cs/azencot_fsas is only mounted on CS-lab
+        # nodes, so jobs landing on ISE GPU nodes can't see it, whereas /home is
+        # mounted cluster-wide.
+        ucr_data_path = os.environ.get("UCR_DATA_PATH")
+        if ucr_data_path:
+            env_cmds.append(f"export UCR_DATA_PATH={ucr_data_path}")
 
         cfg = SlurmConfig(
             host=os.environ.get("SLURM_HOST", "slurm.bgu.ac.il"),

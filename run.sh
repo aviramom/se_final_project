@@ -35,6 +35,9 @@ fi
 : "${SLURM_TIME_LIMIT:=02:00:00}"
 : "${CHATTS_MODEL_PATH:=/home/aviramom/models/chatts-8b}"
 : "${QWEN_VL_MODEL_PATH:=/home/aviramom/models/qwen3-vl-8b}"
+# Home-staged UCR archive — mounted on all nodes (unlike /cs/azencot_fsas, which
+# is only on CS-lab nodes). Needed for the icl_ucr_* benchmarks.
+: "${UCR_DATA_PATH:=/home/aviramom/ucr_data/Univariate_arff}"
 
 STREAMLIT=".venv/bin/streamlit"
 
@@ -55,6 +58,7 @@ case "$MODEL" in
     SLURM_CPUS="$SLURM_CPUS" \
     SLURM_MEM_GB="$SLURM_MEM_GB" \
     SLURM_TIME_LIMIT="$SLURM_TIME_LIMIT" \
+    UCR_DATA_PATH="$UCR_DATA_PATH" \
     CHATTS_MODEL_PATH="$CHATTS_MODEL_PATH" \
       "$STREAMLIT" run fmeval/app/main.py
     ;;
@@ -68,6 +72,7 @@ case "$MODEL" in
     SLURM_CPUS="$SLURM_CPUS" \
     SLURM_MEM_GB="$SLURM_MEM_GB" \
     SLURM_TIME_LIMIT="$SLURM_TIME_LIMIT" \
+    UCR_DATA_PATH="$UCR_DATA_PATH" \
     QWEN_VL_MODEL_PATH="$QWEN_VL_MODEL_PATH" \
       "$STREAMLIT" run fmeval/app/main.py
     ;;
@@ -81,6 +86,7 @@ case "$MODEL" in
     SLURM_CPUS="$SLURM_CPUS" \
     SLURM_MEM_GB="$SLURM_MEM_GB" \
     SLURM_TIME_LIMIT="$SLURM_TIME_LIMIT" \
+    UCR_DATA_PATH="$UCR_DATA_PATH" \
     CHATTS_MODEL_PATH="$CHATTS_MODEL_PATH" \
     QWEN_VL_MODEL_PATH="$QWEN_VL_MODEL_PATH" \
       "$STREAMLIT" run fmeval/app/main.py

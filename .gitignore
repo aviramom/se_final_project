@@ -32,3 +32,14 @@ data/
 .env
 .idea/
 .vscode/
+Thumbs.db
+*.swp
+*~
+
+# ── Jupyter / logs ────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+logs/
+*.log
+
+# ── Local Streamlit secrets (config.toml is theme-only and tracked) ───────────
+.streamlit/secrets.toml
